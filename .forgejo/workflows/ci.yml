@@ -1,0 +1,42 @@
+name: Rust (Forgejo)
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# Forgejo uses this directory instead of falling back to .github/workflows.
+# Its automatic job token is sufficient; GitHub's permissions key is unsupported.
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # Trixie supplies Python 3.13 and mpv 0.40 (including tct frame buffering).
+    # Node is needed by the checkout action before Rust is installed.
+    container: node:22-trixie
+    steps:
+      - name: Install build and terminal-test dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git build-essential pkg-config procps python3 mpv ffmpeg
+          python3 -c 'import sys; assert sys.version_info >= (3, 11), "Python 3.11+ is required"'
+          mpv --list-options | grep -- '--vo-tct-buffering'
+      - name: Check out source
+        uses: https://data.forgejo.org/actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        uses: https://github.com/dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      # Do not depend on GitHub's cache service or its runner's Node version.
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked --all-targets
+      - run: cargo build --locked --release
+      - name: Verify keyboard, links, and image viewer handoff
+        run: python3 scripts/smoke-terminal.py
+      - name: Verify Mastodon and Bluesky account switching
+        run: python3 scripts/smoke-bluesky.py
+      - name: Verify terminal playback and restoration
+        run: python3 scripts/test-terminal-playback.py --binary target/release/tootles --expect-fixed

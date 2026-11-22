@@ -1,8 +1,9 @@
-name: Rust
+name: Rust (GitHub)
 
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -10,8 +11,19 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # Match Forgejo's tested runtime, including mpv's tct frame-buffering option.
+    container: node:22-trixie
     steps:
+      - name: Install build and terminal-test dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git build-essential pkg-config procps python3 mpv ffmpeg
+          python3 -c 'import sys; assert sys.version_info >= (3, 11), "Python 3.11+ is required"'
+          mpv --list-options | grep -- '--vo-tct-buffering'
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -24,9 +36,5 @@ jobs:
         run: python3 scripts/smoke-terminal.py
       - name: Verify Mastodon and Bluesky account switching
         run: python3 scripts/smoke-bluesky.py
-      - name: Install video regression tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends mpv ffmpeg
       - name: Verify terminal playback and restoration
         run: python3 scripts/test-terminal-playback.py --binary target/release/tootles --expect-fixed

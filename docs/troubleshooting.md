@@ -29,6 +29,20 @@ Drafts belong to the account that created them. If a revoked or expired session
 cannot refresh, log in again; do not include app passwords or session tokens in
 bug reports.
 
+## Forgejo cannot find a GitHub action
+
+An error such as `https://data.forgejo.org/dtolnay/rust-toolchain: Not found`
+means Forgejo resolved a relative action name against its default action host.
+The Forgejo workflow uses explicit action URLs, including
+`https://github.com/dtolnay/rust-toolchain@stable`.
+
+Update to the commit containing `.forgejo/workflows/ci.yml` and run **Rust
+(Forgejo)**. A rerun of an older commit may still use the old workflow. The
+`permissions` message is a warning about a GitHub-only field; the dedicated
+Forgejo workflow omits it. These build checks do not need an Authorized
+Integration. GitHub CI and release workflows remain in `.github/workflows`
+for the public mirror.
+
 ## Mastodon login reports an unexpected response format
 
 Version 0.1.0 combined several unrelated failures into the message “The server

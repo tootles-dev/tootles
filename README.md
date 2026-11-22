@@ -169,7 +169,11 @@ tootles completions fish > ~/.config/fish/completions/tootles.fish
 tootles completions zsh  > /path/on/your/fpath/_tootles
 ```
 
-Create the parent directory for your shell first. Optional desktop and man-page files are in `packaging/`. The CI workflow checks formatting, Clippy, tests, and release builds. Tagging a hosted repository with `v*` builds Linux x86_64, Linux ARM64, and macOS ARM64 archives, checksums, shell completions, and a GitHub release. No remote release has been published by this checkout.
+Create the parent directory for your shell first. Optional desktop and man-page files are in `packaging/`.
+
+Both hosting platforms have CI: [Forgejo](.forgejo/workflows/ci.yml) and [GitHub](.github/workflows/ci.yml) check formatting, Clippy, tests, release builds, and terminal workflows on pushes and pull requests. Each also supports a manual run. Both use a Node 22 / Debian Trixie container, with Python 3.13 and mpv 0.40 for the terminal tests. Forgejo needs a Docker-capable runner labeled `ubuntu-latest`; its workflow loads external actions from explicit URLs and needs no additional token or Authorized Integration for these checks.
+
+Forgejo reads `.forgejo/workflows` instead of falling back to `.github/workflows`. The public GitHub mirror uses `.github/workflows`, including its [release workflow](.github/workflows/release.yml): pushing a `v*` tag there builds Linux x86_64, Linux ARM64, and macOS ARM64 archives, checksums, shell completions, and a GitHub release. Forgejo currently runs checks only; release publishing is configured for GitHub. No remote release has been published by this checkout.
 
 ## Development
 
