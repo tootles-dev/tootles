@@ -6,7 +6,22 @@
 
 ## Install the CLI
 
-Requires **Rust 1.90+** and a C linker. Linux is the primary platform; macOS is supported by the terminal and browser-launching code.
+### Requirements
+
+| Use | Requirements |
+| --- | --- |
+| Build from source | **Rust 1.90+**, Cargo, and a C compiler/linker such as GCC or Clang. Install the toolchain with [rustup](https://rustup.rs). |
+| Run the installed CLI | An interactive UTF-8 terminal and a writable configuration directory. A true-color terminal is recommended; no Nerd Font is required. |
+| Connect to Mastodon | A Mastodon account and network access to its HTTPS server. Browser OAuth opens through `xdg-open` on Linux or `open` on macOS; the authorization URL can also be opened manually. |
+| View inline images | Kitty, Sixel, or iTerm2 graphics support for pixel images. Other terminals, including Alacritty, use colored half-block previews. No external image viewer is needed. |
+| Play video or audio | The optional **mpv** executable on `PATH`. Window mode needs a graphical desktop; Terminal mode needs mpv's `kitty` or `tct` output. Alacritty uses `tct`. Playback is tested with **mpv 0.41.0**. |
+| Run the optional media regression tests | Python 3, **ffmpeg**, and mpv on a Unix system with PTY support. Python and the ffmpeg executable are development-test dependencies, not dependencies of the installed CLI. |
+
+**Platform status:** Linux is built and tested. macOS code paths and Apple Silicon release packaging are present, but native builds and runtime remain unverified. Native Windows support is incomplete: default configuration paths, credential permissions, testing, and packaging still need work.
+
+On Debian or Ubuntu, install the source-build tools with `sudo apt install build-essential`. For optional playback and automatic browser opening, install `sudo apt install mpv xdg-utils`. Other distributions can use their equivalent packages. Check `mpv --vo=help` for available video outputs. Hyprland is optional; Tootles runs inside your chosen terminal.
+
+### Build and launch
 
 ```sh
 cd /vmstore/repos/tootles
@@ -16,6 +31,8 @@ tootles --demo
 ```
 
 Cargo installs a standalone `tootles` executable into `~/.cargo/bin`. Make sure that directory is on `PATH`. You do not need the repository or Cargo to run the installed binary. Alternatively, `./scripts/install.sh` installs under `~/.local` (override with `TOOTLES_INSTALL_ROOT`).
+
+After updating the checkout, reinstall with `cargo install --locked --path . --force`. Run `tootles --version` to verify which build is on `PATH`.
 
 ```sh
 tootles login mastodon.social   # use your own Mastodon server
@@ -142,8 +159,9 @@ cargo run -- --snapshot docs/preview.svg --width 144 --height 44
 cargo run --example render_previews -- docs
 python3 scripts/smoke-terminal.py
 python3 scripts/smoke-video.py    # optional; requires mpv and ffmpeg
+python3 scripts/test-terminal-playback.py --binary target/release/tootles --expect-fixed
 ```
 
-Tests use a local mock server and offline providers. They do not require an account or publish anything. Terminal rendering tests exercise all themes, modals, compact layouts, content-warning privacy, and tiny window sizes. Live OAuth and actual graphics protocol/compositor behavior require an authenticated server and a supporting terminal to verify end-to-end.
+Tests use a local mock server and offline providers. They do not require an account or publish anything. Terminal rendering tests exercise all themes, modals, compact layouts, content-warning privacy, and tiny window sizes. The optional terminal playback regression requires Python 3, mpv, and ffmpeg on Unix; it generates local clips and checks playback completion, cancellation, resize, player failures, and terminal restoration in a PTY. Live OAuth and actual graphics protocol/compositor behavior require an authenticated server and a supporting terminal to verify end-to-end.
 
 Read the [architecture and adapter guide](docs/architecture.md) to add another network. Built with [Ratatui](https://ratatui.rs/), [TachyonFX](https://github.com/ratatui/tachyonfx), Crossterm, Tokio, and Reqwest. The reusable-component approach of [ratcn](https://github.com/kristoferlund/ratcn) informed the interface; its components are not a dependency. MIT licensed.

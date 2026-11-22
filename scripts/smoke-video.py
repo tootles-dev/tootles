@@ -76,7 +76,13 @@ def scenario(directory, player_available):
             send(b"q", 0.6)
         else:
             assert b"mpv is unavailable" in output[start:], "missing player error was not shown"
-        assert output[start:].count(b"\x1b[?1049l") >= 1, "TUI was not suspended"
+        # mpv's own terminal driver leaves its alternate screen when it exits.
+        # Tootles must never expose the shell merely to launch a player; when
+        # mpv is absent there should be no LeaveAlternateScreen at all.
+        if player_available:
+            assert output[start:].count(b"\x1b[?1049l") >= 1, "mpv did not complete screen cleanup"
+        else:
+            assert output[start:].count(b"\x1b[?1049l") == 0, "missing player exposed the shell screen"
         assert output[start:].count(b"\x1b[?1049h") >= 1, "TUI was not resumed"
         send(b"\x1b")  # Gallery -> browser.
         send(b"\x1b")  # Browser -> composer.

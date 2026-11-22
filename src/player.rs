@@ -92,10 +92,16 @@ fn arguments(source: &Source, output: Option<TerminalOutput>) -> Vec<OsString> {
     match output {
         Some(output) => {
             args.push("--input-terminal=yes".into());
-            args.push(match output {
-                TerminalOutput::Kitty => "--vo=kitty".into(),
-                TerminalOutput::TrueColor => "--vo=tct".into(),
-            });
+            args.push("--term-osd=no".into());
+            match output {
+                TerminalOutput::Kitty => args.push("--vo=kitty".into()),
+                TerminalOutput::TrueColor => {
+                    args.push("--vo=tct".into());
+                    // Keep each frame together instead of issuing separate
+                    // writes for every row of ANSI colors and half blocks.
+                    args.push("--vo-tct-buffering=frame".into());
+                }
+            }
         }
         None => {
             args.push("--input-terminal=no".into());
@@ -176,8 +182,9 @@ impl Drop for Player {
     }
 }
 
-/// The caller must suspend its terminal and stop reading input before awaiting
-/// this function. mpv owns terminal input until it exits (q returns to Tootles).
+/// The caller must stop drawing and reading input before awaiting this function.
+/// Keep raw mode enabled and restore terminal modes afterward. mpv owns input
+/// until it exits (q returns to Tootles).
 pub async fn play_terminal(source: &Source, output: TerminalOutput) -> Result<()> {
     play_terminal_with(OsStr::new("mpv"), source, output).await
 }
@@ -191,7 +198,9 @@ pub async fn play_terminal_with(
         .args(arguments(source, Some(output)))
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
+        // Diagnostics must not interrupt the video driver's escape sequences.
+        // Report process failures in the gallery after restoring the terminal.
+        .stderr(Stdio::null())
         .kill_on_drop(true)
         .spawn()
         .map_err(spawn_error)?

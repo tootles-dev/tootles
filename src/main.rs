@@ -3,7 +3,11 @@ use clap::{CommandFactory, Parser, Subcommand};
 use crossterm::{
     event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture},
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    style::{Attribute, ResetColor, SetAttribute},
+    terminal::{
+        Clear, ClearType, EnableLineWrap, EndSynchronizedUpdate, EnterAlternateScreen,
+        LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    },
 };
 use ratatui::{
     Terminal,
@@ -285,21 +289,40 @@ impl TerminalHandoff {
             mouse,
             resumed: false,
         };
-        disable_raw_mode()?;
         execute!(
             io::stdout(),
             DisableMouseCapture,
             DisableBracketedPaste,
-            crossterm::cursor::Show,
-            LeaveAlternateScreen
+            EndSynchronizedUpdate,
+            SetAttribute(Attribute::Reset),
+            ResetColor,
+            Clear(ClearType::All),
+            crossterm::cursor::MoveTo(0, 0),
+            crossterm::cursor::Show
         )?;
+        // Keep playback in the application screen. Leaving it here exposes
+        // the shell prompt and writes the playback banner into shell history.
+        // Keep raw mode too: mpv inherits it and restores it on exit, without
+        // an echo-enabled gap. Crossterm retains the original shell settings.
         Ok(handoff)
     }
 
     fn resume(&mut self) -> Result<()> {
+        // A child can change tty settings even if crossterm still considers
+        // raw mode enabled. Restore our saved baseline before applying it again.
+        disable_raw_mode()?;
         enable_raw_mode()?;
+        // Cancel an unfinished control sequence and restore normal keypad
+        // mode even if the player exited without its normal cleanup.
+        io::stdout().write_all(b"\x18\x1b>")?;
         execute!(
             io::stdout(),
+            EndSynchronizedUpdate,
+            DisableMouseCapture,
+            SetAttribute(Attribute::Reset),
+            ResetColor,
+            EnableLineWrap,
+            // mpv's text driver leaves the alternate screen on exit.
             EnterAlternateScreen,
             EnableBracketedPaste,
             crossterm::cursor::Hide
@@ -410,9 +433,9 @@ async fn tui(app: &mut App, mouse: bool, image_protocol: &str) -> Result<()> {
         }
         if let Some(source) = gallery.as_mut().and_then(|g| g.take_terminal_request()) {
             let mut handoff = TerminalHandoff::suspend(mouse)?;
-            writeln!(
+            write!(
                 io::stdout(),
-                "Tootles · Space pause · arrows seek · 9/0 volume · q return"
+                "Tootles · Space pause · arrows seek · 9/0 volume · q return\r\n"
             )?;
             io::stdout().flush()?;
             let result = player::play_terminal(&source, terminal_output).await;

@@ -161,6 +161,11 @@ mod processes {
             safe_options(&args);
             assert!(args.iter().any(|a| a == expected));
             assert!(args.iter().any(|a| a == "--input-terminal=yes"));
+            assert!(args.iter().any(|a| a == "--term-osd=no"));
+            assert_eq!(
+                args.iter().any(|a| a == "--vo-tct-buffering=frame"),
+                output == TerminalOutput::TrueColor
+            );
             assert_eq!(
                 OsStr::new(args.last().unwrap()),
                 path.canonicalize().unwrap().as_os_str()
