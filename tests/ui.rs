@@ -140,6 +140,70 @@ fn content_warnings_hide_text_media_and_poll_until_revealed() {
 }
 
 #[test]
+fn post_link_hitboxes_follow_wrapped_unicode_text_and_precede_card_selection() {
+    let mut view = sample();
+    view.posts.truncate(1);
+    view.posts[0].poll = None;
+    view.posts[0].text = "🌍 café https://example.org/a-very-long-path-that-wraps-across-several-lines/写真?hello=world".into();
+    for width in [48, 95, 150] {
+        draw(&mut view, width, 40);
+        let direct: Vec<_> = view
+            .hits
+            .iter()
+            .filter(|h| matches!(&h.hit, Hit::Command(cmd) if cmd == "post:0:link:0"))
+            .collect();
+        assert!(!direct.is_empty());
+        if width == 48 {
+            assert!(
+                direct.len() >= 2,
+                "a wrapped URL must remain clickable on its next line"
+            );
+        }
+        for hit in direct {
+            let first = view
+                .hits
+                .iter()
+                .find(|other| other.area.contains((hit.area.x, hit.area.y).into()))
+                .unwrap();
+            assert!(matches!(&first.hit, Hit::Command(cmd) if cmd == "post:0:link:0"));
+            assert!(hit.area.width > 0);
+        }
+        assert!(
+            view.hits
+                .iter()
+                .any(|h| matches!(&h.hit, Hit::Command(cmd) if cmd == "post:0:links"))
+        );
+    }
+    view.posts[0].spoiler_text = "Do not reveal".into();
+    let screen = draw(&mut view, 150, 40);
+    assert!(!screen.contains("example.org"));
+    assert!(!view.hits.iter().any(
+        |h| matches!(&h.hit, Hit::Command(cmd) if cmd.contains(":link:") || cmd.ends_with(":links"))
+    ));
+}
+
+#[test]
+fn link_picker_shows_destination_and_correct_scrolled_row_indexes() {
+    let mut view = sample();
+    view.modal = Modal::Links {
+        urls: (0..12)
+            .map(|n| format!("https://example.org/destination/{n}"))
+            .collect(),
+        selected: 10,
+    };
+    let screen = draw(&mut view, 100, 35);
+    assert!(screen.contains("Links in this post"));
+    assert!(screen.contains("https://example.org/destination/10"));
+    assert!(screen.contains("Open in browser"));
+    assert!(
+        view.hits
+            .iter()
+            .any(|h| matches!(h.hit, Hit::ModalSelect(10)))
+    );
+    assert!(!view.hits.iter().any(|h| matches!(h.hit, Hit::Select(_))));
+}
+
+#[test]
 fn sensitive_media_descriptions_wait_for_explicit_reveal() {
     let mut view = sample();
     view.posts.truncate(1);
@@ -206,6 +270,13 @@ fn every_modal_and_theme_renders_at_every_size_without_invalid_hitboxes() {
         Modal::Accounts { selected: 0 },
         Modal::Lists { selected: 0 },
         Modal::People { selected: 0 },
+        Modal::Links {
+            urls: vec![
+                "https://example.org/one".into(),
+                "http://example.net/two".into(),
+            ],
+            selected: 1,
+        },
         Modal::Poll {
             choices: vec![0],
             selected: 1,

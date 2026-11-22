@@ -99,7 +99,7 @@ impl DemoProvider {
                 "1016",
                 1,
                 2,
-                "The nicest thing about the open web? You can rearrange the furniture.\n\nA small tool, made with care, can feel more like a room than a feed. That's the kind of software I want to build.\n\n#OpenWeb #Design",
+                "The nicest thing about the open web? You can rearrange the furniture.\n\nA small tool, made with care, can feel more like a room than a feed. That's the kind of software I want to build.\n\n#OpenWeb #Design\nhttps://joinmastodon.org/",
             ),
             (
                 "1015",

@@ -58,6 +58,10 @@ pub enum Modal {
     People {
         selected: usize,
     },
+    Links {
+        urls: Vec<String>,
+        selected: usize,
+    },
     Poll {
         choices: Vec<usize>,
         selected: usize,
@@ -208,6 +212,11 @@ pub const COMMANDS: &[Command] = &[
         id: "open",
         label: "Open post in browser",
         hint: "o",
+    },
+    Command {
+        id: "links",
+        label: "Open a link from the selected post",
+        hint: "L",
     },
     Command {
         id: "media",

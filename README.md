@@ -14,12 +14,13 @@
 | Run the installed CLI | An interactive UTF-8 terminal and a writable configuration directory. A true-color terminal is recommended; no Nerd Font is required. |
 | Connect to Mastodon | A Mastodon account and network access to its HTTPS server. Browser OAuth opens through `xdg-open` on Linux or `open` on macOS; the authorization URL can also be opened manually. |
 | View inline images | Kitty, Sixel, or iTerm2 graphics support for pixel images. Other terminals, including Alacritty, use colored half-block previews. No external image viewer is needed. |
+| Open original images in the default viewer | An image application associated with the file type. Linux also needs `xdg-open` from `xdg-utils`; macOS uses `open`. No particular image viewer or mpv is required. |
 | Play video or audio | The optional **mpv** executable on `PATH`. Window mode needs a graphical desktop; Terminal mode needs mpv's `kitty` or `tct` output. Alacritty uses `tct`. Playback is tested with **mpv 0.41.0**. |
 | Run the optional media regression tests | Python 3, **ffmpeg**, and mpv on a Unix system with PTY support. Python and the ffmpeg executable are development-test dependencies, not dependencies of the installed CLI. |
 
 **Platform status:** Linux is built and tested. macOS code paths and Apple Silicon release packaging are present, but native builds and runtime remain unverified. Native Windows support is incomplete: default configuration paths, credential permissions, testing, and packaging still need work.
 
-On Debian or Ubuntu, install the source-build tools with `sudo apt install build-essential`. For optional playback and automatic browser opening, install `sudo apt install mpv xdg-utils`. Other distributions can use their equivalent packages. Check `mpv --vo=help` for available video outputs. Hyprland is optional; Tootles runs inside your chosen terminal.
+On Debian or Ubuntu, install the source-build tools with `sudo apt install build-essential`. For optional playback and opening browsers or default applications, install `sudo apt install mpv xdg-utils`. Other distributions can use their equivalent packages. Check `mpv --vo=help` for available video outputs. Hyprland is optional; Tootles runs inside your chosen terminal.
 
 ### Build and launch
 
@@ -81,6 +82,7 @@ Press **?** at any time outside an input for help, or **Ctrl+K** / **:** for the
 | `/` / `#` | Search / browse hashtag |
 | `x` | Reveal or hide content warning / sensitive media |
 | `m` / `o` | Media gallery / post in browser |
+| `L` | Choose an HTTP or HTTPS link from the selected post |
 | `v` / `e` | Vote / edit your post |
 | `a` / `l` / `d` | Accounts / lists / drafts |
 | `T` / `c` / `i` | Cycle themes / compact mode / inspector |
@@ -89,6 +91,8 @@ Press **?** at any time outside an input for help, or **Ctrl+K** / **:** for the
 | `q` / `Ctrl+C` | Save the current draft and quit |
 
 Click navigation items, post cards, action chips, fields, and modal controls. The wheel moves through posts or scrolls the inspector when hovered. Hold your terminal's text-selection modifier (often Shift) to select terminal text, or launch with `--no-mouse`.
+
+Post URLs are underlined and clickable, including links wrapped across lines. Press `L` or click the post's **Links** action to choose among its destinations; arrows select, `Enter` or a click opens the link, and `Esc` closes the picker. `o` continues to open the Mastodon post itself. Only HTTP and HTTPS destinations without embedded credentials are offered, and links behind a content warning remain hidden until you reveal the post.
 
 ### Writing a post
 
@@ -114,9 +118,11 @@ Separate poll options with semicolons, for example `Tea; Coffee; Water`. A post 
 
 ### Images, video and audio
 
-Press `m` on a media post to open its gallery. Use `--image-protocol halfblocks` to skip terminal capability queries over unusual SSH or multiplexer setups. Images are downloaded only then, without attaching your account token to third-party media hosts. The gallery chooses the terminal's supported **Kitty**, **Sixel**, or **iTerm2** graphics protocol, with a Unicode half-block fallback. Images are bounded in download size and decoded dimensions; original URLs and alt text remain available if a preview cannot load. GIF previews show a static frame.
+Press `m` on a media post to open its gallery. The image rendering label shows **Kitty**, **Sixel**, **iTerm2**, or **Block preview**. Alacritty uses colored text blocks, so images look pixelated; detailed inline images require a terminal with graphics support, such as Kitty, Ghostty, or foot. `--image-protocol halfblocks` deliberately selects the block preview and skips capability queries. Terminal previews are fitted to the gallery, limited to 2,048 pixels per side, and have no zoom or pan. GIF previews show a static frame.
 
-Use arrows or `h`/`l` to switch attachments. For video or audio, `v` cycles **Window → Terminal → Browser** playback; `Enter` plays the selected item. Window and Terminal modes use an optional, separately installed **mpv** executable. Terminal mode uses Kitty graphics when detected, with a true-color text fallback; `q` exits mpv and returns to Tootles. `o` opens a remote original through your desktop URL handler (`xdg-open` on Linux). Sensitive attachments stay hidden until you reveal the post with `x`. The gallery uses a small memory cache and does not save downloaded images to disk. See [the media guide](docs/media.md) for controls and supported preview formats.
+For images, press `v` to choose **Terminal → Default image viewer → Browser**, then `Enter` (local images omit Browser). **Default image viewer** opens the original image in your operating system's associated application, using a private, validated copy of the original bytes for both online and local images. No separate Tootles image-viewer dependency is required; Linux uses `xdg-open` from `xdg-utils` and your configured image application. `o` opens an online original in your browser or a local file in its default application. External applications open only when you explicitly request them.
+
+Use arrows or `h`/`l` to switch attachments. For video or audio, `v` cycles **Window → Terminal → Browser** playback; `Enter` plays the selected item. Window and Terminal modes use an optional, separately installed **mpv** executable. Terminal mode uses Kitty graphics when detected, with a true-color text fallback; `q` exits mpv and returns to Tootles. Sensitive attachments stay hidden until you reveal the post with `x`. Media requests receive no account access token. See [the media guide](docs/media.md) for controls, resource limits, and temporary-file behavior.
 
 For login or installation problems, see [troubleshooting](docs/troubleshooting.md).
 

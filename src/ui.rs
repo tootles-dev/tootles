@@ -1,7 +1,7 @@
 //! Responsive, terminal-native presentation. Every pointer target carries the
 //! same semantic action used by the keyboard; no account state lives here.
 use crate::file_picker::FileKind;
-use crate::{model::*, view::*};
+use crate::{links, model::*, view::*};
 use ratatui::{
     Frame,
     layout::{Alignment, Rect},
@@ -656,6 +656,107 @@ fn wrapped(text: &str, width: usize) -> Vec<String> {
     }
     lines
 }
+
+#[derive(Default)]
+struct LinkedLine {
+    text: String,
+    // Byte ranges in the rendered line, paired with the post's deduplicated URL index.
+    links: Vec<(std::ops::Range<usize>, usize)>,
+}
+impl LinkedLine {
+    fn styled(&self, p: Palette, style: Style) -> Line<'static> {
+        let mut spans = Vec::new();
+        let mut start = 0;
+        for (range, _) in &self.links {
+            if range.start > start {
+                spans.push(Span::styled(
+                    self.text[start..range.start].to_owned(),
+                    style,
+                ));
+            }
+            spans.push(Span::styled(
+                self.text[range.clone()].to_owned(),
+                p.accent().add_modifier(Modifier::UNDERLINED),
+            ));
+            start = range.end;
+        }
+        spans.push(Span::styled(self.text[start..].to_owned(), style));
+        Line::from(spans)
+    }
+    fn show_text(&mut self, text: String) {
+        let common: usize = self
+            .text
+            .chars()
+            .zip(text.chars())
+            .take_while(|(a, b)| a == b)
+            .map(|(c, _)| c.len_utf8())
+            .sum();
+        self.links.retain_mut(|(range, _)| {
+            range.end = range.end.min(common);
+            range.start < range.end
+        });
+        self.text = text;
+    }
+}
+fn linked_wrapped(value: &str, width: usize) -> Vec<LinkedLine> {
+    let width = width.max(1);
+    let urls = links::extract(value);
+    let matches = links::find(value);
+    let mut lines = Vec::new();
+    let mut line_start = 0;
+    for original in value.split('\n') {
+        let mut line = LinkedLine::default();
+        let mut word_start = 0;
+        for word in original.split_whitespace() {
+            word_start += original[word_start..].find(word).unwrap_or(0);
+            if !line.text.is_empty() && line.text.width() + word.width() + 1 > width {
+                lines.push(std::mem::take(&mut line));
+            }
+            if !line.text.is_empty() {
+                line.text.push(' ');
+            }
+            for (offset, grapheme) in word.grapheme_indices(true) {
+                if !line.text.is_empty() && line.text.width() + grapheme.width() > width {
+                    lines.push(std::mem::take(&mut line));
+                }
+                let start = line.text.len();
+                line.text.push_str(grapheme);
+                let source_byte = line_start + word_start + offset;
+                if let Some(link) = matches
+                    .iter()
+                    .find(|link| link.range.contains(&source_byte))
+                    && let Some(index) = urls.iter().position(|url| url == &link.url)
+                {
+                    if let Some((range, previous)) = line.links.last_mut()
+                        && *previous == index
+                        && range.end == start
+                    {
+                        range.end = line.text.len();
+                    } else {
+                        line.links.push((start..line.text.len(), index));
+                    }
+                }
+            }
+            word_start += word.len();
+        }
+        lines.push(line);
+        line_start += original.len() + 1;
+    }
+    lines
+}
+fn link_hits(view: &mut View, line: &LinkedLine, index: usize, area: Rect) {
+    for (range, link) in &line.links {
+        let x = line.text[..range.start].width().min(area.width as usize) as u16;
+        let width = line.text[range.clone()]
+            .width()
+            .min(area.width.saturating_sub(x) as usize) as u16;
+        command(
+            view,
+            Rect::new(area.x + x, area.y, width, area.height),
+            &format!("post:{index}:link:{link}"),
+        );
+    }
+}
 fn body_lines(post: &Post, width: u16, view: &View) -> Vec<String> {
     let limit = if view.compact { 2 } else { 5 };
     if hidden(post, view) {
@@ -678,6 +779,7 @@ fn post_height(post: &Post, width: u16, view: &View) -> u16 {
         + u16::from(!post.spoiler_text.is_empty())
         + u16::from(!post.media.is_empty() && !hidden(post, view))
         + u16::from(post.poll.is_some() && !hidden(post, view))
+        + u16::from(!hidden(post, view) && !links::extract(&post.text).is_empty())
 }
 fn post_card(
     frame: &mut Frame,
@@ -742,17 +844,44 @@ fn post_card(
         command(view, row(inside, y), &format!("post:{index}:reveal"));
         y += 1;
     }
+    let mut linked = linked_wrapped(&post.text, area.width.saturating_sub(4) as usize).into_iter();
     for line in body_lines(post, area.width, view) {
+        let mut decorated = if hidden(post, view) {
+            LinkedLine::default()
+        } else {
+            linked.next().unwrap_or_default()
+        };
+        decorated.show_text(line);
         text(
             frame,
             row(inside, y),
-            line,
+            decorated.styled(p, p.text()),
             if hidden(post, view) {
                 p.muted()
             } else {
                 p.text()
             },
         );
+        link_hits(view, &decorated, index, row(inside, y));
+        y += 1;
+    }
+    let urls = if hidden(post, view) {
+        vec![]
+    } else {
+        links::extract(&post.text)
+    };
+    if !urls.is_empty() {
+        text(
+            frame,
+            row(inside, y),
+            format!(
+                "↗ {} link{} · L to open",
+                urls.len(),
+                if urls.len() == 1 { "" } else { "s" }
+            ),
+            p.accent(),
+        );
+        command(view, row(inside, y), &format!("post:{index}:links"));
         y += 1;
     }
     if !post.media.is_empty() && !hidden(post, view) {
@@ -913,13 +1042,21 @@ fn notification_card(
                 .take(3)
                 .collect()
         };
+        let mut linked = linked_wrapped(&post.text, inner.width as usize).into_iter();
         for (i, line) in lines.into_iter().enumerate() {
+            let mut decorated = if hidden(post, view) {
+                LinkedLine::default()
+            } else {
+                linked.next().unwrap_or_default()
+            };
+            decorated.show_text(line);
             text(
                 frame,
                 row(inner, 3 + i as u16),
-                line,
+                decorated.styled(p, Style::default().fg(p.soft)),
                 Style::default().fg(p.soft),
             );
+            link_hits(view, &decorated, index, row(inner, 3 + i as u16));
         }
     }
     hit(view, area, Hit::SelectNotification(index));
@@ -1030,6 +1167,8 @@ fn inspector(frame: &mut Frame, view: &mut View, area: Rect, p: Palette) {
         area.height.saturating_sub(13),
     );
     let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut linked_lines = Vec::new();
+    let mut links_action_line = None;
     if view.profile.is_some() && !account.note.is_empty() {
         lines.push(Line::from(Span::styled("ABOUT", p.muted())));
         lines.extend(
@@ -1065,11 +1204,29 @@ fn inspector(frame: &mut Frame, view: &mut View, area: Rect, p: Palette) {
             p.accent(),
         )));
     } else {
-        lines.extend(
-            wrapped(&post.text, body.width as usize)
-                .into_iter()
-                .map(Line::from),
-        );
+        for line in linked_wrapped(&post.text, body.width as usize) {
+            linked_lines.push((lines.len(), line));
+            lines.push(
+                linked_lines
+                    .last()
+                    .expect("pushed line")
+                    .1
+                    .styled(p, p.text()),
+            );
+        }
+        let urls = links::extract(&post.text);
+        if !urls.is_empty() {
+            lines.push(Line::default());
+            links_action_line = Some(lines.len());
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "L  Open {} link{}",
+                    urls.len(),
+                    if urls.len() == 1 { "" } else { "s" }
+                ),
+                p.accent(),
+            )));
+        }
         if !post.media.is_empty() {
             lines.push(Line::default());
             lines.push(Line::from(Span::styled("ATTACHMENTS", p.muted())));
@@ -1151,6 +1308,20 @@ fn inspector(frame: &mut Frame, view: &mut View, area: Rect, p: Palette) {
         .saturating_sub(body.height as usize)
         .min(u16::MAX as usize) as u16;
     view.detail_scroll = view.detail_scroll.min(max_scroll);
+    for (line_index, line) in linked_lines {
+        if let Some(y) = line_index.checked_sub(view.detail_scroll as usize)
+            && y < body.height as usize
+        {
+            let area = row(body, y as u16);
+            link_hits(view, &line, view.selected, area);
+        }
+    }
+    if let Some(y) =
+        links_action_line.and_then(|line| line.checked_sub(view.detail_scroll as usize))
+        && y < body.height as usize
+    {
+        command(view, row(body, y as u16), "links");
+    }
     frame.render_widget(
         Paragraph::new(lines)
             .style(p.text())
@@ -1338,6 +1509,7 @@ fn modal(frame: &mut Frame, view: &mut View, p: Palette) {
         Modal::Palette { query, selected } => palette_modal(frame, view, &query, selected, p),
         Modal::Compose => compose_modal(frame, view, p),
         Modal::FileBrowser => file_browser_modal(frame, view, p),
+        Modal::Links { urls, selected } => links_modal(frame, view, &urls, selected, p),
         Modal::Input {
             title,
             value,
@@ -1550,6 +1722,99 @@ fn modal(frame: &mut Frame, view: &mut View, p: Palette) {
         }
     }
 }
+fn links_modal(frame: &mut Frame, view: &mut View, urls: &[String], selected: usize, p: Palette) {
+    let height = (urls.len().min(6) * 3 + 11) as u16;
+    let area = modal_frame(frame, view, 86, height, "Links in this post", p);
+    text(
+        frame,
+        row(area, 0),
+        "Choose a destination to open in your browser.",
+        p.muted(),
+    );
+    let count = (area.height.saturating_sub(8) / 3).max(1) as usize;
+    let offset = selected.saturating_sub(count.saturating_sub(1));
+    for (index, url) in urls.iter().enumerate().skip(offset).take(count) {
+        let y = 2 + (index - offset) as u16 * 3;
+        let entry = portion(area, 0, y, area.width, 2);
+        if entry.bottom() > area.bottom().saturating_sub(5) {
+            break;
+        }
+        frame.render_widget(
+            Block::default().style(Style::default().bg(if index == selected {
+                p.selected
+            } else {
+                p.panel
+            })),
+            entry,
+        );
+        let host = url::Url::parse(url)
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_owned))
+            .unwrap_or_default();
+        text(
+            frame,
+            row(entry, 0),
+            format!(
+                "{} {}  {}",
+                if index == selected { "›" } else { " " },
+                index + 1,
+                host
+            ),
+            if index == selected {
+                p.accent()
+            } else {
+                p.text()
+            },
+        );
+        text(
+            frame,
+            row(entry, 1),
+            format!(
+                "  {}",
+                ellipsis(url, entry.width.saturating_sub(2) as usize)
+            ),
+            p.muted(),
+        );
+        hit(view, entry, Hit::ModalSelect(index));
+    }
+    if area.height > 7 {
+        let detail = portion(area, 0, area.height - 6, area.width, 3);
+        if let Some(url) = urls.get(selected) {
+            frame.render_widget(
+                Paragraph::new(url.as_str())
+                    .style(p.text())
+                    .wrap(Wrap { trim: false }),
+                detail,
+            );
+        }
+        chip(
+            frame,
+            view,
+            portion(area, 0, area.height - 3, 18, 1),
+            "Open in browser",
+            "modal_activate",
+            true,
+            p,
+        );
+        if area.width > 21 {
+            chip(
+                frame,
+                view,
+                portion(area, 21, area.height - 3, 10, 1),
+                "Close",
+                "cancel",
+                false,
+                p,
+            );
+        }
+    }
+    text(
+        frame,
+        row(area, area.height.saturating_sub(1)),
+        "↑/↓ choose  ·  Enter open  ·  Esc close",
+        p.muted(),
+    );
+}
 fn help_modal(frame: &mut Frame, view: &mut View, p: Palette) {
     let area = modal_frame(frame, view, 80, 32, "Make yourself at home", p);
     let lines = vec![
@@ -1566,7 +1831,7 @@ fn help_modal(frame: &mut Frame, view: &mut View, p: Palette) {
         ("f   ·   b   ·   s", "Favorite · boost · bookmark"),
         ("p   ·   F", "View author · follow / unfollow"),
         ("x   ·   v", "Reveal content warning · vote"),
-        ("o   ·   m", "Open post · media gallery"),
+        ("o   ·   L   ·   m", "Open post · post links · media"),
         ("", ""),
         ("YOUR WORKSPACE", ""),
         ("Ctrl+K  or  :", "Find any command"),

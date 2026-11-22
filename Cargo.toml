@@ -1,6 +1,6 @@
 [package]
 name = "tootles"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 rust-version = "1.90"
 description = "A calm, keyboard-first social cockpit for Mastodon and beyond"

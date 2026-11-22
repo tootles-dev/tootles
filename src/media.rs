@@ -1,15 +1,13 @@
 //! Explicit, bounded attachment viewing. Media is fetched only after the user
 //! opens the gallery; decoding and terminal encoding never run on the UI thread.
 use std::{
-    io::{Cursor, Read},
     path::{Path, PathBuf},
     sync::{Arc, mpsc},
-    time::Duration,
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
-use image::{DynamicImage, ImageReader, Limits};
+use image::DynamicImage;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect, Size},
@@ -17,21 +15,22 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
 };
-use ratatui_image::{Image, Resize, picker::Picker, protocol::Protocol};
+use ratatui_image::{
+    Image, Resize,
+    picker::{Picker, ProtocolType},
+    protocol::Protocol,
+};
 use tokio::task::JoinHandle;
-use url::Url;
 
 use crate::{
-    auth,
+    auth, config,
     file_picker::{FileKind, media_kind},
+    image_viewer, media_source,
     model::{Media, Post},
     player::{PlaybackMode, Player, Source},
 };
 
-pub const MAX_DOWNLOAD_BYTES: usize = 16 * 1024 * 1024;
-const MAX_PIXELS: u64 = 40_000_000;
-const MAX_DIMENSION: u32 = 16_384;
-const MAX_PREVIEW_DIMENSION: u32 = 2_048;
+pub use media_source::MAX_DOWNLOAD_BYTES;
 const MAX_ATTACHMENTS: usize = 4;
 
 struct Preview {
@@ -57,6 +56,35 @@ struct Pending {
     task: JoinHandle<()>,
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum ImageMode {
+    #[default]
+    Terminal,
+    DefaultViewer,
+    Browser,
+}
+
+impl ImageMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Terminal => "Terminal",
+            Self::DefaultViewer => "Default image viewer",
+            Self::Browser => "Browser",
+        }
+    }
+}
+
+struct PendingOriginal {
+    receive: mpsc::Receiver<Result<PathBuf>>,
+    task: JoinHandle<()>,
+}
+
+impl Drop for PendingOriginal {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
 /// A modal attachment gallery. Call `tick` from the existing event loop, then
 /// `render`; `event` returns true when the user wants to close the gallery.
 pub struct Gallery {
@@ -68,10 +96,14 @@ pub struct Gallery {
     pending: Option<Pending>,
     size: Size,
     bounds: Rect,
-    buttons: [Rect; 4],
+    buttons: [Rect; 5],
     notice: Option<String>,
     local: Option<PathBuf>,
     mode: PlaybackMode,
+    image_mode: ImageMode,
+    config_root: Option<PathBuf>,
+    original: Option<PendingOriginal>,
+    viewer_launcher: Option<image_viewer::Launcher>,
     player: Option<Player>,
     terminal_requested: Option<Source>,
 }
@@ -89,13 +121,22 @@ impl Gallery {
             pending: None,
             size: Size::new(70, 22),
             bounds: Rect::default(),
-            buttons: [Rect::default(); 4],
+            buttons: [Rect::default(); 5],
             notice: None,
             local: None,
             mode: PlaybackMode::default(),
+            image_mode: ImageMode::default(),
+            config_root: None,
+            original: None,
+            viewer_launcher: None,
             player: None,
             terminal_requested: None,
         }
+    }
+
+    pub fn with_config_root(mut self, root: Option<PathBuf>) -> Self {
+        self.config_root = root;
+        self
     }
 
     /// Preview an explicitly chosen local file. Reading and decoding are deferred
@@ -166,18 +207,12 @@ impl Gallery {
                             mouse.column >= self.buttons[0].x + self.buttons[0].width / 2,
                         );
                     } else if self.buttons[1].contains(point) {
-                        if self.is_image() {
-                            self.reload();
-                        } else {
-                            self.play();
-                        }
+                        self.play();
                     } else if self.buttons[2].contains(point) {
-                        if self.is_image() {
-                            self.open_external();
-                        } else {
-                            self.cycle_mode();
-                        }
+                        self.cycle_mode();
                     } else if self.buttons[3].contains(point) {
+                        self.open_external();
+                    } else if self.buttons[4].contains(point) {
                         return true;
                     } else if self.bounds.contains(point)
                         && mouse.column > self.bounds.x + self.bounds.width / 2
@@ -199,6 +234,7 @@ impl Gallery {
     fn navigate(&mut self, forward: bool) {
         if !self.attachments.is_empty() {
             self.player = None;
+            self.original = None;
             self.selected = if forward {
                 (self.selected + 1) % self.attachments.len()
             } else {
@@ -222,7 +258,18 @@ impl Gallery {
     }
 
     fn cycle_mode(&mut self) {
-        if !self.is_image() {
+        self.original = None;
+        if self.is_image() {
+            self.image_mode = match self.image_mode {
+                ImageMode::Terminal => ImageMode::DefaultViewer,
+                ImageMode::DefaultViewer if self.local.is_none() => ImageMode::Browser,
+                _ => ImageMode::Terminal,
+            };
+            self.notice = Some(format!(
+                "View: {}. Press Enter to open.",
+                self.image_mode.label()
+            ));
+        } else {
             self.mode = self.mode.next();
             self.notice = Some(format!(
                 "Playback: {}. Press Enter to play.",
@@ -232,7 +279,15 @@ impl Gallery {
     }
 
     fn play(&mut self) {
-        if self.is_image() || self.mode == PlaybackMode::Browser {
+        if self.is_image() {
+            match self.image_mode {
+                ImageMode::Terminal => self.reload(),
+                ImageMode::DefaultViewer => self.prepare_original(),
+                ImageMode::Browser => self.open_external(),
+            }
+            return;
+        }
+        if self.mode == PlaybackMode::Browser {
             self.open_external();
             return;
         }
@@ -270,11 +325,13 @@ impl Gallery {
 
     fn open_external(&mut self) {
         if self.local.is_some() {
-            self.notice = Some(if self.is_image() {
-                "This local image is displayed here. Esc returns to the file browser.".into()
+            if self.is_image() {
+                self.prepare_original();
             } else {
-                "Local files play in Window or Terminal mode. Press v to change modes.".into()
-            });
+                self.notice = Some(
+                    "Local files play in Window or Terminal mode. Press v to change modes.".into(),
+                );
+            }
             return;
         }
         if let Some(media) = self.attachments.get(self.selected) {
@@ -294,7 +351,71 @@ impl Gallery {
         }
     }
 
+    fn prepare_original(&mut self) {
+        if self.original.is_some() {
+            return;
+        }
+        let Some(media) = self.attachments.get(self.selected) else {
+            return;
+        };
+        let source = match &self.local {
+            Some(path) => media_source::Source::Local(path.clone()),
+            None => media_source::Source::Remote(media.url.clone()),
+        };
+        let cache_root = match config::config_dir(self.config_root.as_deref()) {
+            Ok(root) => root.join("image-previews"),
+            Err(error) => {
+                self.notice = Some(error.to_string());
+                return;
+            }
+        };
+        let (send, receive) = mpsc::channel();
+        let task = tokio::spawn(async move {
+            let result = async {
+                let original = media_source::load_original(source).await?;
+                tokio::task::spawn_blocking(move || image_viewer::store(&original, &cache_root))
+                    .await
+                    .context("Image preparation worker failed")?
+            }
+            .await;
+            let _ = send.send(result);
+        });
+        self.original = Some(PendingOriginal { receive, task });
+        self.notice = Some("Preparing original for your default image viewer… Esc cancels.".into());
+    }
+
     pub fn tick(&mut self) {
+        if let Some(result) = self
+            .viewer_launcher
+            .as_mut()
+            .and_then(image_viewer::Launcher::poll)
+        {
+            self.viewer_launcher = None;
+            if let Err(error) = result {
+                self.notice = Some(error.to_string());
+            }
+        }
+        if let Some(original) = &self.original {
+            let result = match original.receive.try_recv() {
+                Ok(result) => Some(result),
+                Err(mpsc::TryRecvError::Disconnected) => Some(Err(anyhow::anyhow!(
+                    "Image preparation worker stopped unexpectedly"
+                ))),
+                Err(mpsc::TryRecvError::Empty) => None,
+            };
+            if let Some(result) = result {
+                // Only the active gallery can launch a viewer. Closing, changing
+                // modes, or navigating drops this request before it can launch.
+                self.original = None;
+                self.notice = Some(match result.and_then(|path| image_viewer::start(&path)) {
+                    Ok(launcher) => {
+                        self.viewer_launcher = Some(launcher);
+                        "Opening the original in your default image viewer".into()
+                    }
+                    Err(error) => format!("Could not open image: {error}"),
+                });
+            }
+        }
         if let Some(result) = self.player.as_mut().and_then(Player::poll) {
             self.player = None;
             self.playback_finished(result);
@@ -326,7 +447,11 @@ impl Gallery {
                 Cached::Failed("In-memory demo attachment; the file is not uploaded".into());
             return;
         }
-        if media.kind != "image" || self.size.width == 0 || self.size.height == 0 {
+        if media.kind != "image"
+            || self.image_mode != ImageMode::Terminal
+            || self.size.width == 0
+            || self.size.height == 0
+        {
             return;
         }
         let existing = match &self.cache[self.selected] {
@@ -420,20 +545,57 @@ impl Gallery {
             self.attachments.len(),
             media.kind
         );
+        let mode_hint = if media.kind == "image" {
+            match self.image_mode {
+                ImageMode::Terminal => match self.picker.protocol_type() {
+                    ProtocolType::Halfblocks => {
+                        "Block preview · v → Default image viewer for full detail"
+                    }
+                    ProtocolType::Kitty => "Kitty graphics · v changes viewer · R reloads",
+                    ProtocolType::Sixel => "Sixel graphics · v changes viewer · R reloads",
+                    ProtocolType::Iterm2 => "iTerm2 graphics · v changes viewer · R reloads",
+                },
+                ImageMode::DefaultViewer => "Default image viewer · Enter opens the original file",
+                ImageMode::Browser => "Browser · Enter opens the original URL",
+            }
+        } else {
+            ""
+        };
         frame.render_widget(
-            Paragraph::new(caption).style(Style::default().fg(accent).add_modifier(Modifier::BOLD)),
+            Paragraph::new(vec![
+                Line::styled(
+                    caption,
+                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                ),
+                Line::styled(mode_hint, Style::default().fg(muted)),
+            ]),
             rows[0],
         );
-        if media.kind == "image" {
+        if media.kind == "image" && self.image_mode != ImageMode::Terminal {
+            let explanation = match self.image_mode {
+                ImageMode::DefaultViewer => {
+                    "Open the original image in your default desktop viewer.\nFull resolution; zoom and animation depend on your viewer."
+                }
+                ImageMode::Browser => "Open the original image URL in your default browser.",
+                ImageMode::Terminal => unreachable!(),
+            };
+            frame.render_widget(
+                Paragraph::new(format!("\n{}\n\n{explanation}\n\nEnter  Open    v  Change mode\n\nEsc returns to Tootles", self.image_mode.label()))
+                    .style(Style::default().fg(accent))
+                    .alignment(Alignment::Center)
+                    .wrap(Wrap { trim: true }),
+                rows[1],
+            );
+        } else if media.kind == "image" {
             match &self.cache[self.selected] {
                 Cached::Ready(preview) if preview.size == self.size => {
                     frame.render_widget(Image::new(&preview.protocol), rows[1]);
                 }
                 Cached::Failed(error) => {
                     let fallback = if self.local.is_some() {
-                        "R retries; Esc returns to the file browser."
+                        "R retries; v changes viewer; o opens in your default image viewer."
                     } else {
-                        "R retries; o opens the original in your browser."
+                        "R retries; v changes viewer; o opens the original in your browser."
                     };
                     frame.render_widget(
                         Paragraph::new(format!(
@@ -495,10 +657,11 @@ impl Gallery {
             rows[2],
         );
         let button_areas = Layout::horizontal([
-            Constraint::Percentage(28),
+            Constraint::Percentage(21),
+            Constraint::Percentage(20),
             Constraint::Percentage(25),
-            Constraint::Percentage(29),
-            Constraint::Percentage(18),
+            Constraint::Percentage(20),
+            Constraint::Percentage(14),
         ])
         .split(rows[3]);
         self.buttons = [
@@ -506,21 +669,29 @@ impl Gallery {
             button_areas[1],
             button_areas[2],
             button_areas[3],
+            button_areas[4],
         ];
-        let play_label = if self.is_image() {
-            "R  Reload"
+        let play_label = if self.is_image() && self.image_mode == ImageMode::Terminal {
+            "Enter  Reload"
+        } else if self.is_image() {
+            "Enter  Open"
         } else {
             "Enter  Play"
         };
         let mode_label = if self.is_image() {
-            "o  Original".into()
+            match self.image_mode {
+                ImageMode::Terminal => "v  Terminal".into(),
+                ImageMode::DefaultViewer => "v  Default viewer".into(),
+                ImageMode::Browser => "v  Browser".into(),
+            }
         } else {
             format!("v  {}", self.mode.label())
         };
         for (area, label) in self.buttons.into_iter().zip([
-            "← h / l →  Navigate",
+            "← h / l →",
             play_label,
             &mode_label,
+            "o  Original",
             "Esc  Close",
         ]) {
             frame.render_widget(
@@ -534,27 +705,11 @@ impl Gallery {
 /// Read an explicitly selected local image with the same budgets as a remote
 /// preview. No networking or upload occurs, and special files are rejected.
 pub async fn load_file(path: &Path) -> Result<DynamicImage> {
-    let path = path.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        let metadata = path
-            .metadata()
-            .context("Could not inspect the local image")?;
-        if !metadata.is_file() {
-            bail!("Select a regular image file");
-        }
-        if metadata.len() > MAX_DOWNLOAD_BYTES as u64 {
-            bail!("Image exceeds the 16 MiB preview limit");
-        }
-        let mut bytes = Vec::new();
-        std::fs::File::open(&path)
-            .context("Could not open the local image")?
-            .take((MAX_DOWNLOAD_BYTES + 1) as u64)
-            .read_to_end(&mut bytes)
-            .context("Could not read the local image")?;
-        decode_image(&bytes)
-    })
-    .await
-    .context("Local image decoding worker failed")?
+    Ok(
+        media_source::load_original(media_source::Source::Local(path.to_path_buf()))
+            .await?
+            .into_preview(),
+    )
 }
 
 impl Drop for Gallery {
@@ -568,105 +723,16 @@ impl Drop for Gallery {
 /// Download a public image without account credentials, with both declared and
 /// actual byte limits. GIF images use the first frame; gifv/video stays external.
 pub async fn fetch_image(value: &str) -> Result<DynamicImage> {
-    let demo: Option<&'static [u8]> = match value {
-        "demo://desktop" => Some(include_bytes!("../assets/demo-desktop.png")),
-        "demo://trail" => Some(include_bytes!("../assets/demo-trail.png")),
-        _ => None,
-    };
-    if let Some(bytes) = demo {
-        return tokio::task::spawn_blocking(move || decode_image(bytes))
-            .await
-            .context("Demo image decoding worker failed")?;
-    }
-    let url = media_url(value)?;
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(25))
-        .connect_timeout(Duration::from_secs(8))
-        .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            if attempt.previous().len() > 3 || media_url(attempt.url().as_str()).is_err() {
-                attempt.stop()
-            } else {
-                attempt.follow()
-            }
-        }))
-        .user_agent(concat!("tootles/", env!("CARGO_PKG_VERSION")))
-        .build()?;
-    let mut response = client
-        .get(url)
-        .send()
-        .await
-        .context("Could not download image")?;
-    if !response.status().is_success() {
-        bail!("Image server returned HTTP {}", response.status());
-    }
-    if response
-        .content_length()
-        .is_some_and(|length| length > MAX_DOWNLOAD_BYTES as u64)
-    {
-        bail!("Image exceeds the 16 MiB preview limit; open it in your browser");
-    }
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .context("Image download was interrupted")?
-    {
-        if bytes.len().saturating_add(chunk.len()) > MAX_DOWNLOAD_BYTES {
-            bail!("Image exceeds the 16 MiB preview limit; open it in your browser");
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    tokio::task::spawn_blocking(move || decode_image(&bytes))
-        .await
-        .context("Image decoding worker failed")?
+    Ok(
+        media_source::load_original(media_source::Source::Remote(value.to_owned()))
+            .await?
+            .into_preview(),
+    )
 }
 
 /// Decode a bounded preview. Public for deterministic tests and future adapters.
 pub fn decode_image(bytes: &[u8]) -> Result<DynamicImage> {
-    if bytes.len() > MAX_DOWNLOAD_BYTES {
-        bail!("Image exceeds the 16 MiB preview limit");
-    }
-    let probe = ImageReader::new(Cursor::new(bytes))
-        .with_guessed_format()
-        .context("Unrecognized image format")?;
-    let (width, height) = probe
-        .into_dimensions()
-        .context("Could not read image dimensions")?;
-    if u64::from(width) * u64::from(height) > MAX_PIXELS
-        || width > MAX_DIMENSION
-        || height > MAX_DIMENSION
-    {
-        bail!("Image exceeds the 40 megapixel preview limit");
-    }
-    let mut limits = Limits::default();
-    limits.max_image_width = Some(MAX_DIMENSION);
-    limits.max_image_height = Some(MAX_DIMENSION);
-    limits.max_alloc = Some(256 * 1024 * 1024);
-    let mut reader = ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
-    reader.limits(limits);
-    let image = reader.decode().context("Could not decode image")?;
-    Ok(
-        if image.width() > MAX_PREVIEW_DIMENSION || image.height() > MAX_PREVIEW_DIMENSION {
-            image.thumbnail(MAX_PREVIEW_DIMENSION, MAX_PREVIEW_DIMENSION)
-        } else {
-            image
-        },
-    )
-}
-
-fn media_url(value: &str) -> Result<Url> {
-    if value.chars().any(char::is_control) {
-        bail!("Invalid image URL");
-    }
-    let url = Url::parse(value).context("Invalid image URL")?;
-    if !matches!(url.scheme(), "http" | "https")
-        || url.host_str().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-    {
-        bail!("Images must use an HTTP or HTTPS URL without embedded credentials");
-    }
-    Ok(url)
+    media_source::decode_preview(bytes)
 }
 
 fn display_text(value: &str) -> String {

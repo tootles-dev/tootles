@@ -81,9 +81,74 @@ async fn local_image_gallery_renders_inline_and_returns_without_uploading() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     assert!(gallery.take_terminal_request().is_none());
-    press(&mut gallery, KeyCode::Char('o'));
-    assert!(screen(&mut gallery).contains("This local image is displayed here"));
+    assert!(screen(&mut gallery).contains("Block preview"));
+    press(&mut gallery, KeyCode::Char('v'));
+    assert!(screen(&mut gallery).contains("Default image viewer"));
+    // Merely selecting a mode must not open an application or read the original.
+    assert!(!screen(&mut gallery).contains("Preparing original"));
     assert!(gallery.event(&Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))));
+}
+
+#[tokio::test]
+async fn image_view_modes_are_explicit_and_canceled_requests_do_not_launch() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("photo.png");
+    std::fs::write(&path, png(30, 20)).unwrap();
+    let mut gallery = Gallery::from_file(path, Picker::halfblocks())
+        .with_config_root(Some(directory.path().join("config")));
+    press(&mut gallery, KeyCode::Char('v'));
+    assert!(screen(&mut gallery).contains("Default image viewer"));
+    gallery.tick();
+    assert!(!directory.path().join("config").exists());
+    press(&mut gallery, KeyCode::Enter);
+    assert!(screen(&mut gallery).contains("Preparing original"));
+    // Cancel synchronously before the async preparation worker can run.
+    press(&mut gallery, KeyCode::Char('v'));
+    assert!(screen(&mut gallery).contains("Block preview"));
+    tokio::task::yield_now().await;
+    gallery.tick();
+    assert!(!directory.path().join("config").exists());
+    assert!(!screen(&mut gallery).contains("Opened the original"));
+    press(&mut gallery, KeyCode::Char('o'));
+    assert!(screen(&mut gallery).contains("Preparing original"));
+    drop(gallery);
+    tokio::task::yield_now().await;
+    assert!(!directory.path().join("config").exists());
+}
+
+#[test]
+fn remote_image_gallery_cycles_all_view_modes_with_mouse_controls() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mut gallery = Gallery::new(
+        Post {
+            media: vec![Media {
+                kind: "image".into(),
+                url: "https://example.org/photo.png".into(),
+                ..Media::default()
+            }],
+            ..Post::default()
+        },
+        Picker::halfblocks(),
+    );
+    let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+    terminal.draw(|frame| gallery.render(frame)).unwrap();
+    let buffer = terminal.backend().buffer();
+    let index = buffer
+        .content()
+        .iter()
+        .rposition(|cell| cell.symbol() == "v")
+        .unwrap();
+    gallery.event(&Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: (index % 100) as u16,
+        row: (index / 100) as u16,
+        modifiers: KeyModifiers::NONE,
+    }));
+    assert!(screen(&mut gallery).contains("Default image viewer ·"));
+    press(&mut gallery, KeyCode::Char('v'));
+    assert!(screen(&mut gallery).contains("Browser · Enter"));
+    press(&mut gallery, KeyCode::Char('v'));
+    assert!(screen(&mut gallery).contains("Block preview"));
 }
 
 #[test]
@@ -292,4 +357,167 @@ fn gallery_handles_empty_posts_small_terminals_and_keyboard_navigation() {
         .map(|cell| cell.symbol())
         .collect();
     assert!(screen.contains("first video"));
+}
+
+/// Wait until the background worker has stored the encoded original, then
+/// remove it before ticking the gallery. This makes cancellation regressions
+/// fail with a local missing-file error instead of launching a desktop viewer.
+async fn remove_prepared_original(root: &std::path::Path, expected: &[u8]) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        if let Ok(entries) = std::fs::read_dir(root.join("image-previews")) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("image-")
+                    && std::fs::read(&path).is_ok_and(|bytes| bytes == expected)
+                    && std::fs::remove_file(&path).is_ok()
+                {
+                    // Let an already completed worker enqueue its result. The
+                    // gallery intentionally has not ticked yet, so no opener
+                    // can run while the valid stored file exists.
+                    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                    return;
+                }
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "original was not prepared"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+}
+
+#[tokio::test]
+async fn prepared_native_image_is_canceled_when_navigating_or_changing_mode() {
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
+    let server = MockServer::start().await;
+    let bytes = png(4, 3);
+    Mock::given(path("/first.png"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(bytes.clone()))
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(path("/second.png"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(bytes.clone()))
+        .expect(0)
+        .mount(&server)
+        .await;
+    for cancel in [KeyCode::Right, KeyCode::Char('v')] {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("private");
+        let mut gallery = Gallery::new(
+            Post {
+                media: vec![
+                    Media {
+                        kind: "image".into(),
+                        url: format!("{}/first.png", server.uri()),
+                        description: "first original".into(),
+                        ..Media::default()
+                    },
+                    Media {
+                        kind: "image".into(),
+                        url: format!("{}/second.png", server.uri()),
+                        description: "second original".into(),
+                        ..Media::default()
+                    },
+                ],
+                ..Post::default()
+            },
+            Picker::halfblocks(),
+        )
+        .with_config_root(Some(root.clone()));
+        press(&mut gallery, KeyCode::Char('v'));
+        press(&mut gallery, KeyCode::Enter);
+        remove_prepared_original(&root, &bytes).await;
+        press(&mut gallery, cancel);
+        for _ in 0..4 {
+            gallery.tick();
+            tokio::task::yield_now().await;
+        }
+        let text = screen(&mut gallery);
+        assert!(!text.contains("Opened the original"));
+        assert!(!text.contains("Could not open image"));
+        assert!(!text.contains("Preparing original"));
+        if cancel == KeyCode::Right {
+            assert!(text.contains("second original"));
+            assert!(text.contains("2 / 2"));
+        } else {
+            assert!(text.contains("Browser · Enter"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn native_prepare_deduplicates_pending_enter_and_allows_retry_after_failure() {
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
+    let server = MockServer::start().await;
+    Mock::given(path("/invalid.png"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes(b"Not an image".to_vec())
+                .set_delay(std::time::Duration::from_millis(40)),
+        )
+        .expect(2)
+        .mount(&server)
+        .await;
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("private");
+    let mut gallery = Gallery::new(
+        Post {
+            media: vec![Media {
+                kind: "image".into(),
+                url: format!("{}/invalid.png", server.uri()),
+                ..Media::default()
+            }],
+            ..Post::default()
+        },
+        Picker::halfblocks(),
+    )
+    .with_config_root(Some(root.clone()));
+    press(&mut gallery, KeyCode::Char('v'));
+    for attempt in 1..=2 {
+        press(&mut gallery, KeyCode::Enter);
+        press(&mut gallery, KeyCode::Enter);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            gallery.tick();
+            if screen(&mut gallery).contains("Could not open image") {
+                break;
+            }
+            assert!(tokio::time::Instant::now() < deadline);
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(server.received_requests().await.unwrap().len(), attempt);
+        assert!(!root.join("image-previews").exists());
+    }
+}
+
+#[test]
+fn populated_image_modes_render_at_tiny_sizes_without_starting_a_viewer() {
+    let mut gallery = Gallery::new(
+        Post {
+            media: vec![Media {
+                kind: "image".into(),
+                url: "demo://desktop".into(),
+                description: "A very small terminal can still close the gallery".into(),
+                ..Media::default()
+            }],
+            ..Post::default()
+        },
+        Picker::halfblocks(),
+    );
+    for _mode in 0..3 {
+        for (width, height) in [(1, 1), (2, 2), (20, 6), (40, 12), (100, 32)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| gallery.render(frame)).unwrap();
+        }
+        press(&mut gallery, KeyCode::Char('v'));
+    }
+    assert!(screen(&mut gallery).contains("Block preview"));
+    assert!(gallery.take_terminal_request().is_none());
 }

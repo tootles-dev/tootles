@@ -15,7 +15,7 @@ use ratatui::{
 };
 use std::{
     io::{self, IsTerminal, Read, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::Duration,
 };
 use tachyonfx::fx;
@@ -424,11 +424,17 @@ async fn tui(app: &mut App, mouse: bool, image_protocol: &str) -> Result<()> {
             _=tokio::signal::ctrl_c()=>app.command("quit"),
         }
         if let Some(post) = app.media_requested.take() {
-            gallery = Some(tootles::media::Gallery::new(post, picker.clone()));
+            gallery = Some(
+                tootles::media::Gallery::new(post, picker.clone())
+                    .with_config_root(app.config_root().map(Path::to_path_buf)),
+            );
             redraw = true;
         }
         if let Some(path) = app.local_media_requested.take() {
-            gallery = Some(tootles::media::Gallery::from_file(path, picker.clone()));
+            gallery = Some(
+                tootles::media::Gallery::from_file(path, picker.clone())
+                    .with_config_root(app.config_root().map(Path::to_path_buf)),
+            );
             redraw = true;
         }
         if let Some(source) = gallery.as_mut().and_then(|g| g.take_terminal_request()) {

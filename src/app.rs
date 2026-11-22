@@ -3,6 +3,7 @@ use crate::{
     config::{self, Config},
     editor,
     file_picker::{self, FileKind, Listing},
+    links,
     model::*,
     provider::{SocialProvider, demo::DemoProvider, mastodon::Mastodon},
     view::*,
@@ -153,6 +154,9 @@ impl App {
             Ok(Data::Identity(me, p.capabilities()))
         });
         self.load(false);
+    }
+    pub fn config_root(&self) -> Option<&Path> {
+        self.root.as_deref()
     }
     fn spawn(&self, job: Job, future: impl Future<Output = Result<Data>> + Send + 'static) {
         let tx = self.tx.clone();
@@ -526,6 +530,7 @@ impl App {
             | Modal::Accounts { selected }
             | Modal::Lists { selected }
             | Modal::People { selected }
+            | Modal::Links { selected, .. }
             | Modal::Poll { selected, .. }
             | Modal::Drafts { selected } => *selected = i,
             _ => {}
@@ -547,6 +552,7 @@ impl App {
             Modal::Accounts { selected } => (*selected, self.view.accounts.len()),
             Modal::Lists { selected } => (*selected, self.view.lists.len()),
             Modal::People { selected } => (*selected, self.view.people.len()),
+            Modal::Links { urls, selected } => (*selected, urls.len()),
             Modal::Drafts { selected } => (*selected, self.view.drafts.len()),
             Modal::Poll { selected, .. } => (
                 *selected,
@@ -713,6 +719,10 @@ impl App {
                     KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
                     KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
                     KeyCode::Enter => self.activate_modal(),
+                    KeyCode::PageDown => self.move_selection(5),
+                    KeyCode::PageUp => self.move_selection(-5),
+                    KeyCode::Home => self.move_selection(isize::MIN),
+                    KeyCode::End => self.move_selection(isize::MAX),
                     KeyCode::Char('D') if matches!(self.view.modal, Modal::Drafts { .. }) => {
                         if let Modal::Drafts { selected } = self.view.modal
                             && selected < self.view.drafts.len()
@@ -782,6 +792,7 @@ impl App {
                     'p' => Some("profile"),
                     'F' => Some("follow"),
                     'o' => Some("open"),
+                    'L' => Some("links"),
                     'm' => Some("media"),
                     'x' => Some("reveal"),
                     'v' => Some("vote"),
@@ -888,6 +899,11 @@ impl App {
                     self.navigate(Feed::Profile(a.id.clone()));
                 }
             }
+            Modal::Links { urls, selected } => {
+                if let Some(url) = urls.get(selected) {
+                    self.open_browser(url.clone());
+                }
+            }
             Modal::Drafts { selected } => {
                 if let Some(d) = self.view.drafts.get(selected).cloned() {
                     self.open_composer(d);
@@ -936,6 +952,15 @@ impl App {
             if i < self.view.count() {
                 self.view.selected = i;
                 self.command(action);
+            }
+            return;
+        }
+        if let Some(index) = cmd
+            .strip_prefix("link:")
+            .and_then(|s| s.parse::<usize>().ok())
+        {
+            if let Some(url) = self.post_links().and_then(|urls| urls.get(index).cloned()) {
+                self.open_browser(url);
             }
             return;
         }
@@ -1108,6 +1133,11 @@ impl App {
             "open" => {
                 if let Some(p) = self.view.selected_post() {
                     self.open_browser(p.url.clone());
+                }
+            }
+            "links" => {
+                if let Some(urls) = self.post_links() {
+                    self.view.modal = Modal::Links { urls, selected: 0 };
                 }
             }
             "media" => {
@@ -1541,6 +1571,26 @@ impl App {
             }
             Some(Confirmation::Account(account, kind)) => self.account_action_on(*account, &kind),
             None => {}
+        }
+    }
+    fn post_links(&mut self) -> Option<Vec<String>> {
+        let Some(post) = self.view.selected_post() else {
+            self.notice("Select a post to open its links", false);
+            return None;
+        };
+        if !post.spoiler_text.is_empty() && !self.view.revealed.contains(&post.id) {
+            self.notice(
+                "Press x to reveal this post before opening its links",
+                false,
+            );
+            return None;
+        }
+        let urls = links::extract(&post.text);
+        if urls.is_empty() {
+            self.notice("This post has no HTTP or HTTPS links", false);
+            None
+        } else {
+            Some(urls)
         }
     }
     fn open_browser(&mut self, url: String) {
