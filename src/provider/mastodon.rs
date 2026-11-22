@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 use url::Url;
 
 use super::SocialProvider;
+use crate::http::decode_json as decode;
 use crate::model::*;
 
 const PAGE_SIZE: &str = "30";
@@ -285,13 +286,6 @@ fn check_status(response: Response) -> Result<Response> {
     bail!("{explanation} (HTTP {})", status.as_u16());
 }
 
-async fn decode<T: DeserializeOwned>(response: Response) -> Result<T> {
-    response
-        .json()
-        .await
-        .map_err(|_| anyhow!("The server returned an unexpected response format"))
-}
-
 fn next_cursor(headers: &header::HeaderMap) -> Option<String> {
     for value in headers.get_all(header::LINK) {
         for part in value.to_str().ok()?.split(',') {
@@ -328,6 +322,12 @@ impl SocialProvider for Mastodon {
         let account: WireAccount = self
             .get(&["api", "v1", "accounts", "verify_credentials"])
             .await?;
+        ensure!(
+            !account.id.trim().is_empty()
+                && !account.username.trim().is_empty()
+                && !account.acct.trim().is_empty(),
+            "The server returned an incomplete Mastodon account: id, username, and acct are required; no credentials have been saved"
+        );
         // Older compatible servers may not expose the v2 instance endpoint.
         // Authentication still succeeds and the conservative default remains.
         let instance_request = self
@@ -705,7 +705,8 @@ struct WireAccount {
     acct: String,
     display_name: String,
     note: String,
-    url: String,
+    url: Option<String>,
+    uri: Option<String>,
     followers_count: u64,
     following_count: u64,
     statuses_count: u64,
@@ -719,7 +720,13 @@ impl From<WireAccount> for Account {
             acct: clean(&a.acct),
             display_name: clean(&a.display_name),
             note: html_text(&a.note),
-            url: clean(&a.url),
+            url: clean(
+                a.url
+                    .as_deref()
+                    .filter(|url| !url.is_empty())
+                    .or(a.uri.as_deref())
+                    .unwrap_or_default(),
+            ),
             followers_count: a.followers_count,
             following_count: a.following_count,
             statuses_count: a.statuses_count,

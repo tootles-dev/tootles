@@ -11,6 +11,7 @@ use url::Url;
 
 use crate::{
     config::SavedAccount,
+    http::decode_json,
     provider::{SocialProvider, mastodon::Mastodon},
 };
 
@@ -121,8 +122,7 @@ async fn browser_authorize(instance: &str) -> Result<String> {
         .await
         .context("Could not register Tootles with this server")?;
     let response = check_response(response, "Application registration")?;
-    let app: RegisteredApp = response
-        .json()
+    let app: RegisteredApp = decode_json(response)
         .await
         .context("The server returned an invalid application registration")?;
     if app.client_id.is_empty() || app.client_secret.is_empty() {
@@ -158,8 +158,7 @@ async fn browser_authorize(instance: &str) -> Result<String> {
         .await
         .context("Could not exchange the authorization code")?;
     let response = check_response(response, "Authorization")?;
-    let token: TokenResponse = response
-        .json()
+    let token: TokenResponse = decode_json(response)
         .await
         .context("The server returned an invalid token response")?;
     Ok(token.access_token)

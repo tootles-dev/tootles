@@ -2,6 +2,7 @@ pub mod app;
 pub mod auth;
 pub mod config;
 pub mod editor;
+mod http;
 pub mod media;
 pub mod model;
 pub mod provider;
