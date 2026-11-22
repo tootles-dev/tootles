@@ -23,6 +23,10 @@
 
 On Debian or Ubuntu, install the source-build tools with `sudo apt install build-essential`. For optional playback and opening browsers or default applications, install `sudo apt install mpv xdg-utils`. Other distributions can use their equivalent packages. Check `mpv --vo=help` for available video outputs. Hyprland is optional; Tootles runs inside your chosen terminal.
 
+### Install a release build
+
+The public GitHub mirror's release workflow builds Linux x86_64, Linux ARM64, and Apple Silicon macOS archives. Version-tag releases include **Sigstore signatures**, **GitHub build provenance**, and SHA-256 checksums. See [download verification and installation](docs/releases.md) before extracting and installing a release. The installed executable does not require Rust or Cargo. Linux release builds target Ubuntu 24.04 or a compatible newer system; build from source on older distributions. Native Windows packages are not available yet.
+
 ### Build and launch
 
 ```sh
@@ -173,7 +177,9 @@ Create the parent directory for your shell first. Optional desktop and man-page 
 
 Both hosting platforms have CI: [Forgejo](.forgejo/workflows/ci.yml) and [GitHub](.github/workflows/ci.yml) check formatting, Clippy, tests, release builds, and terminal workflows on pushes and pull requests. Each also supports a manual run. Both use a Node 22 / Debian Trixie container, with Python 3.13 and mpv 0.40 for the terminal tests. Forgejo needs a Docker-capable runner labeled `ubuntu-latest`; its workflow loads external actions from explicit URLs and needs no additional token or Authorized Integration for these checks.
 
-Forgejo reads `.forgejo/workflows` instead of falling back to `.github/workflows`. The public GitHub mirror uses `.github/workflows`, including its [release workflow](.github/workflows/release.yml): pushing a `v*` tag there builds Linux x86_64, Linux ARM64, and macOS ARM64 archives, checksums, shell completions, and a GitHub release. Forgejo currently runs checks only; release publishing is configured for GitHub. No remote release has been published by this checkout.
+Forgejo reads `.forgejo/workflows` instead of falling back to `.github/workflows`. The public GitHub mirror uses `.github/workflows`, including its [release workflow](.github/workflows/release.yml). A `v*` tag matching `Cargo.toml` builds and tests Linux x86_64, Linux ARM64, and macOS ARM64 packages, signs each archive with GitHub's short-lived OIDC identity, and publishes a complete release after verifying its signatures and provenance. Packages include docs, the man page, and shell completions. No signing-key secret is needed. Manual branch runs produce unsigned build artifacts; manual tag runs follow the release process. See [GitHub setup, release signing, and verification](docs/releases.md).
+
+Forgejo currently runs checks only; release publishing is configured for GitHub. Preparing these workflows does not publish a release. macOS archives have verifiable download signatures but are not Apple Developer ID signed or notarized.
 
 ## Development
 

@@ -1,60 +1,200 @@
 name: Release CLI
+
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
+
 permissions:
   contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
 jobs:
+  metadata:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate release version
+        id: version
+        run: |
+          python3 - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          version = tomllib.loads(Path('Cargo.toml').read_text())['package']['version']
+          if os.environ['GITHUB_REF_TYPE'] == 'tag':
+              tag = os.environ['GITHUB_REF_NAME']
+              if tag != f'v{version}':
+                  raise SystemExit(f'Tag {tag!r} must match Cargo.toml version: v{version}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              print(f'version={version}', file=output)
+              print(f'prerelease={str("-" in version).lower()}', file=output)
+          PY
+
   package:
+    needs: metadata
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-          - os: macos-latest
+          - os: macos-15
             target: aarch64-apple-darwin
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      TARGET: ${{ matrix.target }}
+      VERSION: ${{ needs.metadata.outputs.version }}
+      BUNDLE: tootles-v${{ needs.metadata.outputs.version }}-${{ matrix.target }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --locked
-      - name: Package executable, docs and completions
-        shell: bash
-        run: |
-          bundle="tootles-${{ matrix.target }}"
-          mkdir -p "$bundle/completions"
-          cp target/release/tootles README.md LICENSE packaging/tootles.1 "$bundle/"
-          cp packaging/tootles.desktop "$bundle/"
-          cp -R docs "$bundle/"
-          for shell in bash zsh fish; do
-            target/release/tootles completions "$shell" > "$bundle/completions/tootles.$shell"
-          done
-          tar -czf "$bundle.tar.gz" "$bundle"
-          shasum -a 256 "$bundle.tar.gz" > "$bundle.tar.gz.sha256"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          name: tootles-${{ matrix.target }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          targets: ${{ matrix.target }}
+          components: rustfmt, clippy
+      - name: Use a canonical temporary directory for credential tests
+        run: |
+          # macOS /var is a symlink; credential storage rejects symlink ancestors.
+          python3 - <<'PY'
+          import os
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              print(f'TMPDIR={os.path.realpath(os.environ["RUNNER_TEMP"])}', file=output)
+          PY
+      # Release executables are built from source without restoring build caches.
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --all-targets --target "$TARGET" -- -D warnings
+      - run: cargo test --locked --all-targets --target "$TARGET"
+      - run: cargo build --release --locked --target "$TARGET"
+      - name: Package executable, docs, and completions
+        run: |
+          binary="target/$TARGET/release/tootles"
+          test "$("$binary" --version)" = "tootles $VERSION"
+          mkdir -p "dist/$BUNDLE/completions"
+          cp "$binary" README.md LICENSE packaging/tootles.1 "dist/$BUNDLE/"
+          cp packaging/tootles.desktop "dist/$BUNDLE/"
+          cp -R docs "dist/$BUNDLE/"
+          for shell in bash zsh fish; do
+            "$binary" completions "$shell" > "dist/$BUNDLE/completions/tootles.$shell"
+          done
+          tar -C dist -czf "dist/$BUNDLE.tar.gz" "$BUNDLE"
+          (cd dist && shasum -a 256 "$BUNDLE.tar.gz" > "$BUNDLE.tar.gz.sha256")
+      - name: Install Cosign
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: v3.1.4
+      - name: Sign and verify release archive
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          cosign sign-blob --yes \
+            --bundle "dist/$BUNDLE.tar.gz.sigstore.json" "dist/$BUNDLE.tar.gz"
+          cosign verify-blob "dist/$BUNDLE.tar.gz" \
+            --bundle "dist/$BUNDLE.tar.gz.sigstore.json" \
+            --certificate-identity "https://github.com/$GITHUB_WORKFLOW_REF" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+      - name: Attest build provenance
+        if: startsWith(github.ref, 'refs/tags/v')
+        id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/${{ env.BUNDLE }}.tar.gz
+          create-storage-record: false
+      - name: Include provenance bundle
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: cp "$ATTESTATION_BUNDLE" "dist/$BUNDLE.tar.gz.intoto.jsonl"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ env.BUNDLE }}
+          if-no-files-found: error
+          compression-level: 0
           path: |
-            tootles-*.tar.gz
-            tootles-*.tar.gz.sha256
+            dist/*.tar.gz
+            dist/*.sha256
+            dist/*.sigstore.json
+            dist/*.intoto.jsonl
+
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: package
-    runs-on: ubuntu-latest
+    needs: [metadata, package]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: write
+    env:
+      VERSION: ${{ needs.metadata.outputs.version }}
+      PRERELEASE: ${{ needs.metadata.outputs.prerelease }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: tootles-*
+          pattern: tootles-v${{ env.VERSION }}-*
+          path: dist
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+          digest-mismatch: error
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
         with:
-          files: |
-            *.tar.gz
-            *.sha256
-          generate_release_notes: true
+          cosign-release: v3.1.4
+      - name: Verify every release asset before publishing
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Keep this list aligned with the native build matrix above.
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin; do
+            archive="tootles-v$VERSION-$target.tar.gz"
+            test -s "$archive"
+            test -s "$archive.sha256"
+            test -s "$archive.sigstore.json"
+            test -s "$archive.intoto.jsonl"
+            shasum -a 256 --check "$archive.sha256"
+            cosign verify-blob "$archive" --bundle "$archive.sigstore.json" \
+              --certificate-identity "https://github.com/$GITHUB_WORKFLOW_REF" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com
+            gh attestation verify "$archive" --bundle "$archive.intoto.jsonl" \
+              --repo "$GITHUB_REPOSITORY" \
+              --cert-identity "https://github.com/$GITHUB_WORKFLOW_REF" \
+              --source-ref "$GITHUB_REF" --source-digest "$GITHUB_SHA" \
+              --deny-self-hosted-runners
+          done
+      - name: Publish complete signed release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > release-notes.md <<EOF
+          Native CLI builds for Linux x86_64, Linux ARM64, and Apple Silicon macOS.
+
+          Each archive includes a SHA-256 checksum, a Sigstore signature bundle
+          (\`.sigstore.json\`), and signed GitHub build provenance (\`.intoto.jsonl\`).
+          [Download verification and installation](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/docs/releases.md).
+          EOF
+          # A draft prevents incomplete asset uploads from becoming a public release.
+          # An existing release is never overwritten; see docs/releases.md for recovery.
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --draft --title "$GITHUB_REF_NAME" --prerelease="$PRERELEASE" \
+            --generate-notes --notes-file release-notes.md \
+            dist/*.tar.gz dist/*.sha256 dist/*.sigstore.json dist/*.intoto.jsonl
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
