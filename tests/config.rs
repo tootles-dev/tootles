@@ -38,7 +38,8 @@ fn configuration_round_trip_preserves_accounts_and_preferences() {
     assert!(!format!("{loaded:?}").contains("bob-secret"));
     assert!(!format!("{loaded:?}").contains("alice-secret"));
     config.save(Some(&root)).unwrap();
-    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 2);
+    assert!(root.join(".config.lock").is_file());
 }
 
 #[test]

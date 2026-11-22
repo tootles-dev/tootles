@@ -1,5 +1,6 @@
 pub mod app;
 pub mod auth;
+pub mod bluesky_auth;
 pub mod config;
 pub mod editor;
 pub mod file_picker;

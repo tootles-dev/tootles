@@ -1,9 +1,9 @@
 # Architecture
 
-Tootles separates the social network from the terminal interface. Mastodon is the first live adapter; the included demo adapter runs the same interface locally with seeded data. Adding another network means translating its API into the common models rather than rebuilding the UI.
+Tootles separates the social network from the terminal interface. Mastodon and Bluesky are live adapters; the included demo adapter runs the same interface locally with seeded data. Adding another network means translating its API into the common models rather than rebuilding the UI.
 
 ```text
-CLI / browser OAuth
+CLI / account authentication
         │
         ▼
 app.rs ───────────── config.rs
@@ -12,6 +12,7 @@ app.rs ───────────── config.rs
   │
   └── SocialProvider
           ├── Mastodon ─── HTTPS REST API
+          ├── Bluesky ──── AT Protocol / Bluesky XRPC
           ├── Demo ─────── local sample data
           └── Your network adapter
 ```
@@ -23,6 +24,8 @@ app.rs ───────────── config.rs
 | `model` | Network-neutral accounts, posts, threads, polls, media, lists, and compose requests |
 | `provider::SocialProvider` | Async reads and mutations; optional operations return an explicit unsupported error |
 | `provider::mastodon` | Mastodon endpoints, pagination, HTML conversion, media uploads, and API errors |
+| `provider::bluesky` | Bluesky timelines, records, rich-text facets, interactions, and image uploads |
+| `bluesky_auth` | App-password session creation, validated PDS routing, token refresh, and private session persistence |
 | `provider::demo` | Local data and mutations for exploration and development without credentials |
 | `view` | Renderable application state, modals, commands, and mouse hit targets |
 | `ui` | Responsive terminal layout, color themes, widget rendering, and animation |
@@ -35,7 +38,7 @@ app.rs ───────────── config.rs
 | `config` | Atomic private file persistence and redacted account diagnostics |
 | `auth` | Server validation, browser OAuth, credential verification, and safe browser launching |
 
-The application works with `SocialProvider` through shared models. API response objects stay in adapters. A provider's capabilities declare posting, media, polls, lists, its display name, and the supported post length. Account IDs and pagination cursors are opaque strings: adapters must not assume other networks use Mastodon's numeric IDs.
+The application works with `SocialProvider` through shared models. API response objects stay in adapters. A provider's capabilities declare its supported feeds, posting, media, polls, lists, editing, visibility, content warnings, and post limits. The interface hides unavailable choices and guards the corresponding keyboard commands; the adapter also validates writes independently. Account IDs and pagination cursors are opaque strings: adapters must not assume other networks use Mastodon's numeric IDs.
 
 ## Adding a network
 
@@ -46,13 +49,13 @@ The application works with `SocialProvider` through shared models. API response 
 5. Preserve account isolation for drafts and state when switching providers. Use opaque cursors and the returned pagination links where supported.
 6. Add mocked HTTP tests for authorization, paging, mutations, and API errors. Exercise the adapter in the existing UI and check every capability-dependent action.
 
-The provider boundary is a compiled Rust extension point, not a runtime plugin loader. No additional live networks ship in this release. A network with fundamentally different primitives may require extending the common models and capability flags.
+The provider boundary is a compiled Rust extension point, not a runtime plugin loader. A network with fundamentally different primitives may require extending the common models and capability flags.
 
 ## Attachment gallery
 
 Press `m` to open a post's attachments after revealing any content warning. The gallery loads images on demand using the terminal protocol selected by `ratatui-image` (Kitty, Sixel, iTerm2, or Unicode half blocks). `h` / `l`, arrow keys, or the mouse wheel move between attachments. Video and audio use optional mpv playback in Window or Terminal mode; `v` cycles those modes and Browser mode. `o` opens an online original in the browser. The composer’s file browser can open the same gallery for a selected local file. See [the media guide](media.md).
 
-Media requests carry no account token. The gallery limits downloads to 16 MiB, decoding to 40 megapixels with a 256 MiB decoder allocation limit, and retained previews to 2048 pixels per dimension. At most four attachments are cached in memory. A single pending image job prevents rapid navigation from launching parallel decoders; the returned attachment index keeps asynchronous results associated with the correct image. Decoding, resizing, and terminal protocol encoding run outside the UI thread. No media cache is written to disk. Demo previews are bundled in the executable and load without a network connection.
+Media requests carry no account token. The gallery limits downloads to 16 MiB, decoding to 40 megapixels with a 256 MiB decoder allocation limit, and retained previews to 2048 pixels per dimension. At most four attachments are cached in memory. A single pending image job prevents rapid navigation from launching parallel decoders; the returned attachment index keeps asynchronous results associated with the correct image. Decoding, resizing, and terminal protocol encoding run outside the UI thread. Terminal previews stay in memory. Explicit default-viewer requests store validated original bytes in a private, bounded image cache; see the media guide for retention and limits. Demo previews are bundled in the executable and load without a network connection.
 
 Folder scans run on blocking workers with a traversal limit. Request IDs and account generations prevent stale listings from replacing newer navigation. Choosing a file returns to the composer’s alt-text field; previewing keeps the picker selection intact.
 
@@ -66,10 +69,12 @@ The default directory is `$XDG_CONFIG_HOME/tootles`, falling back to `~/.config/
 
 On Unix, Tootles creates directories with mode `0700` and files with mode `0600`. Existing paths with broader permissions are rejected with a repair command. Symlink paths and hard-linked private files are rejected. Saves write a fresh private temporary file, sync it, and rename it atomically. Account debug output and TOML parse failures do not expose tokens. Windows does not provide these Unix permission guarantees; use a private user profile directory.
 
-Preference saves reread the current configuration before merging, preserving accounts added or removed by CLI commands since the TUI opened. There is no cross-process lock, so exactly simultaneous writes can still overwrite one another.
+Preference changes, CLI account operations, and rotated Bluesky sessions merge into the current configuration under a private file lock. Refreshes also serialize per account and refuse to restore a removed account or overwrite a newer session. Drafts remain account-scoped.
 
 Browser login registers an application with `read write follow`, sends the user to the instance's authorization page, and exchanges the pasted out-of-band authorization code for a token. The client verifies the account before saving it. HTTPS is required except for loopback development servers. OAuth requests disable redirects; web links are validated as HTTP(S) URLs and opened without a shell. The flow follows the official [application registration](https://docs.joinmastodon.org/methods/apps/) and [OAuth API](https://docs.joinmastodon.org/methods/oauth/) documentation.
 
+Bluesky authentication uses an app password only to establish a session. The saved account's redacted credential field holds serialized access and refresh tokens. The password is not stored. The login response's matching DID document identifies the account host; subsequent authenticated requests stay on that validated origin and never follow HTTP redirects. Bluesky AppView requests are proxied by the PDS. Session expiry triggers a serialized refresh and private persistence. See [Bluesky setup](bluesky.md) and the official [SDK authentication guide](https://atproto.com/guides/sdk-auth).
+
 ## Validation
 
-`cargo test --locked --all-targets` runs local tests and mocked API contracts. `cargo clippy --locked --all-targets -- -D warnings` checks the code, and `cargo fmt --all -- --check` checks formatting. CI runs those checks plus a release build. `scripts/smoke-terminal.py` exercises a real PTY including attachment browsing, inline preview, alt text, drafts, and restoration. The optional `scripts/smoke-video.py` uses ffmpeg and mpv with a generated silent clip to verify real terminal frames, return to the gallery, and missing-player recovery. Live OAuth, real server policy differences, and compositor behavior still require testing with an actual account and terminal session.
+`cargo test --locked --all-targets` runs local tests and mocked API contracts. `cargo clippy --locked --all-targets -- -D warnings` checks the code, and `cargo fmt --all -- --check` checks formatting. CI runs those checks plus a release build. `scripts/smoke-terminal.py` exercises a real PTY including attachment browsing, inline preview, alt text, drafts, and restoration. `scripts/smoke-bluesky.py` uses a local server and PTY to verify hidden-password login, credential privacy, Mastodon/Bluesky switching, and separate drafts. The optional `scripts/smoke-video.py` uses ffmpeg and mpv with a generated silent clip to verify real terminal frames, return to the gallery, and missing-player recovery. Live OAuth, real server policy differences, and compositor behavior still require testing with an actual account and terminal session.

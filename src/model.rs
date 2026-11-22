@@ -216,6 +216,16 @@ pub struct Capabilities {
     pub media: bool,
     pub lists: bool,
     pub max_characters: usize,
+    pub editing: bool,
+    pub bookmarks: bool,
+    pub local_timeline: bool,
+    pub federated_timeline: bool,
+    pub post_visibility: bool,
+    pub content_warnings: bool,
+    pub max_media_attachments: usize,
+    pub image_only_media: bool,
+    pub grapheme_counting: bool,
+    pub max_text_bytes: Option<usize>,
 }
 impl Default for Capabilities {
     fn default() -> Self {
@@ -226,6 +236,52 @@ impl Default for Capabilities {
             media: true,
             lists: true,
             max_characters: 500,
+            editing: true,
+            bookmarks: true,
+            local_timeline: true,
+            federated_timeline: true,
+            post_visibility: true,
+            content_warnings: true,
+            max_media_attachments: 4,
+            image_only_media: false,
+            grapheme_counting: false,
+            max_text_bytes: None,
         }
+    }
+}
+
+impl Capabilities {
+    pub fn text_length(&self, text: &str) -> usize {
+        if self.grapheme_counting {
+            unicode_segmentation::UnicodeSegmentation::graphemes(text, true).count()
+        } else {
+            text.chars().count()
+        }
+    }
+    pub fn compose_length(&self, compose: &Compose) -> usize {
+        self.text_length(&compose.text) + self.text_length(&compose.spoiler_text)
+    }
+    pub fn supports_feed(&self, feed: &Feed) -> bool {
+        match feed {
+            Feed::Local => self.local_timeline,
+            Feed::Federated => self.federated_timeline,
+            Feed::Bookmarks => self.bookmarks,
+            Feed::List(..) => self.lists,
+            _ => true,
+        }
+    }
+    pub fn composer_fields(&self) -> Vec<usize> {
+        let mut fields = vec![0];
+        if self.content_warnings {
+            fields.push(1);
+        }
+        if self.media {
+            fields.extend([2, 3]);
+        }
+        if self.polls {
+            fields.push(4);
+        }
+        fields.push(5);
+        fields
     }
 }

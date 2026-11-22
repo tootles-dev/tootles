@@ -21,8 +21,8 @@ use std::{
 use tachyonfx::fx;
 use tootles::{
     app::{App, parse_theme, theme_key},
-    auth,
-    config::Config,
+    auth, bluesky_auth,
+    config::{self, Config},
     player::{self, TerminalOutput},
     ui,
 };
@@ -65,10 +65,19 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Commands {
-    /// Connect a Mastodon account using browser OAuth
+    /// Connect Mastodon with browser OAuth or Bluesky with an app password
     Login {
-        /// Your server, for example mastodon.social
+        /// Mastodon server or Bluesky handle, for example alice.bsky.social
         instance: String,
+        /// Social network to connect
+        #[arg(long, default_value = "mastodon", value_parser = ["mastodon", "bluesky"])]
+        provider: String,
+        /// Bluesky login server or PDS origin (defaults to https://bsky.social)
+        #[arg(long)]
+        pds: Option<String>,
+        /// Read a Bluesky app password from standard input; never put it in arguments
+        #[arg(long, conflicts_with = "token_stdin")]
+        app_password_stdin: bool,
         /// Read an existing access token from standard input (never a command argument)
         #[arg(long)]
         token_stdin: bool,
@@ -124,69 +133,110 @@ async fn run() -> Result<()> {
         match command {
             Commands::Login {
                 instance,
+                provider,
+                pds,
+                app_password_stdin,
                 token_stdin,
                 label,
             } => {
-                let token = if token_stdin {
-                    let mut token = String::new();
-                    io::stdin().take(16384).read_to_string(&mut token)?;
-                    Some(token)
+                let account = if provider == "bluesky" {
+                    if token_stdin {
+                        bail!("Bluesky login uses --app-password-stdin, not --token-stdin");
+                    }
+                    let password = if app_password_stdin {
+                        let mut password = String::new();
+                        io::stdin()
+                            .take(1025)
+                            .read_to_string(&mut password)
+                            .context("Could not read the app password from standard input")?;
+                        if password.len() > 1024 {
+                            bail!("The app password is too long");
+                        }
+                        password
+                    } else {
+                        bluesky_auth::prompt_app_password()?
+                    };
+                    bluesky_auth::login(
+                        &instance,
+                        pds.as_deref().unwrap_or(bluesky_auth::DEFAULT_PDS),
+                        password,
+                        label,
+                    )
+                    .await?
                 } else {
-                    std::env::var("TOOTLES_TOKEN").ok()
+                    if pds.is_some() || app_password_stdin {
+                        bail!("--pds and --app-password-stdin require --provider bluesky");
+                    }
+                    let token = if token_stdin {
+                        let mut token = String::new();
+                        io::stdin().take(16384).read_to_string(&mut token)?;
+                        Some(token)
+                    } else {
+                        std::env::var("TOOTLES_TOKEN").ok()
+                    };
+                    auth::login(&instance, token, label).await?
                 };
-                let account = auth::login(&instance, token, label).await?;
-                config.accounts.retain(|a| a.id != account.id);
-                config.active = Some(account.id.clone());
                 let label = account.label.clone();
-                config.accounts.push(account);
-                config.save(cli.config_dir.as_deref())?;
+                config::update(cli.config_dir.as_deref(), |latest| {
+                    latest.accounts.retain(|a| a.id != account.id);
+                    latest.active = Some(account.id.clone());
+                    latest.accounts.push(account);
+                    Ok(())
+                })?;
                 println!("Connected {label}. Run `tootles` to make yourself at home.");
             }
             Commands::Accounts => {
                 if config.accounts.is_empty() {
-                    println!("No accounts yet. Connect with: tootles login mastodon.social");
+                    println!(
+                        "No accounts yet. Connect with:\n  tootles login mastodon.social\n  tootles login --provider bluesky your-handle.bsky.social"
+                    );
                 }
                 for (i, a) in config.accounts.iter().enumerate() {
                     let active = config.active_account().is_some_and(|x| x.id == a.id);
                     println!(
-                        "{} {}  {}  ({})",
+                        "{} {}  {}  [{}] ({})",
                         if active { "*" } else { " " },
                         i + 1,
                         a.label,
+                        a.provider,
                         a.instance
                     );
                 }
             }
             Commands::Switch { account } => {
-                let i = find_account(&config, &account)?;
-                config.active = Some(config.accounts[i].id.clone());
-                config.save(cli.config_dir.as_deref())?;
-                println!("Active account: {}", config.accounts[i].label);
+                let label = config::update(cli.config_dir.as_deref(), |latest| {
+                    let i = find_account(latest, &account)?;
+                    latest.active = Some(latest.accounts[i].id.clone());
+                    Ok(latest.accounts[i].label.clone())
+                })?;
+                println!("Active account: {label}");
             }
             Commands::Logout { account } => {
-                let id = if let Some(selector) = account {
-                    config.accounts[find_account(&config, &selector)?]
-                        .id
-                        .clone()
-                } else {
-                    config
-                        .active_account()
-                        .context("No connected account")?
-                        .id
-                        .clone()
-                };
-                config.accounts.retain(|a| a.id != id);
-                if config.active.as_ref() == Some(&id) {
-                    config.active = config.accounts.first().map(|a| a.id.clone());
-                }
-                config.save(cli.config_dir.as_deref())?;
+                config::update(cli.config_dir.as_deref(), |latest| {
+                    let id = if let Some(selector) = account {
+                        latest.accounts[find_account(latest, &selector)?].id.clone()
+                    } else {
+                        latest
+                            .active_account()
+                            .context("No connected account")?
+                            .id
+                            .clone()
+                    };
+                    latest.accounts.retain(|a| a.id != id);
+                    if latest.active.as_ref() == Some(&id) {
+                        latest.active = latest.accounts.first().map(|a| a.id.clone());
+                    }
+                    Ok(())
+                })?;
                 println!(
-                    "Removed the locally saved token. You can revoke Tootles in your server's authorized apps settings. Drafts remain on this device."
+                    "Removed the locally saved credentials. Revoke Mastodon access in authorized apps, or the Bluesky app password in account settings. Drafts remain on this device."
                 );
             }
             Commands::Theme { name } => {
-                config.theme = name.clone();
-                config.save(cli.config_dir.as_deref())?;
+                config::update(cli.config_dir.as_deref(), |latest| {
+                    latest.theme = name.clone();
+                    Ok(())
+                })?;
                 println!("Theme: {}", parse_theme(&name).name());
             }
             Commands::Doctor => {

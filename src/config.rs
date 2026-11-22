@@ -76,8 +76,10 @@ impl Config {
     }
 
     pub fn save(&self, root: Option<&Path>) -> Result<()> {
+        let root = config_dir(root)?;
+        let _lock = private_lock(&root, ".config.lock")?;
         let text = toml::to_string_pretty(self).context("Could not serialize configuration")?;
-        write_private(&config_dir(root)?, "config.toml", text.as_bytes())
+        write_private(&root, "config.toml", text.as_bytes())
     }
 
     pub fn active_account(&self) -> Option<&SavedAccount> {
@@ -86,6 +88,60 @@ impl Config {
             .and_then(|id| self.accounts.iter().find(|account| &account.id == id))
             .or_else(|| self.accounts.first())
     }
+}
+
+/// Change the latest configuration under a cross-process lock. Use this for
+/// interactive preferences, account changes, and rotating credentials, rather
+/// than saving a snapshot which another Tootles process may have changed.
+pub fn update<T>(root: Option<&Path>, change: impl FnOnce(&mut Config) -> Result<T>) -> Result<T> {
+    let root = config_dir(root)?;
+    let _lock = private_lock(&root, ".config.lock")?;
+    let mut config = Config::load(Some(&root))?;
+    let result = change(&mut config)?;
+    let text = toml::to_string_pretty(&config).context("Could not serialize configuration")?;
+    write_private(&root, "config.toml", text.as_bytes())?;
+    Ok(result)
+}
+
+/// Serializes refresh-token use across processes. The guard must remain alive
+/// until the new session is persisted; the config lock is acquired separately.
+pub(crate) fn session_lock(root: Option<&Path>, account_id: &str) -> Result<fs::File> {
+    private_lock(
+        &config_dir(root)?,
+        &format!(".session-{:x}.lock", Sha256::digest(account_id.as_bytes())),
+    )
+}
+
+fn private_lock(root: &Path, name: &str) -> Result<fs::File> {
+    ensure_private_directory(root)?;
+    let path = root.join(name);
+    check_path(&path)?;
+    if let Ok(meta) = fs::symlink_metadata(&path) {
+        check_private(&meta, &path, false)?;
+    }
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options
+        .open(&path)
+        .context("Cannot open private configuration lock")?;
+    check_private(&file.metadata()?, &path, false)?;
+    check_path(&path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let opened = file.metadata()?;
+        let current = fs::symlink_metadata(&path)?;
+        if opened.dev() != current.dev() || opened.ino() != current.ino() {
+            bail!("Configuration lock changed while opening it; please try again");
+        }
+    }
+    file.lock().context("Cannot lock private configuration")?;
+    Ok(file)
 }
 
 /// An explicit directory takes precedence over XDG_CONFIG_HOME and ~/.config.

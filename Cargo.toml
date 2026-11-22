@@ -1,9 +1,9 @@
 [package]
 name = "tootles"
-version = "0.1.4"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.90"
-description = "A calm, keyboard-first social cockpit for Mastodon and beyond"
+description = "A keyboard-first terminal client for Mastodon and Bluesky"
 license = "MIT"
 
 [dependencies]

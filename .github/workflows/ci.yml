@@ -22,6 +22,8 @@ jobs:
       - run: cargo build --locked --release
       - name: Verify keyboard, links, and image viewer handoff
         run: python3 scripts/smoke-terminal.py
+      - name: Verify Mastodon and Bluesky account switching
+        run: python3 scripts/smoke-bluesky.py
       - name: Install video regression tools
         run: |
           sudo apt-get update

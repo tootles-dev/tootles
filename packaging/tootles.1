@@ -1,6 +1,6 @@
-.TH TOOTLES 1 "November 2026" "Tootles 0.1.4" "User Commands"
+.TH TOOTLES 1 "November 2026" "Tootles 0.2.0" "User Commands"
 .SH NAME
-tootles \- a keyboard-first Mastodon client for the terminal
+tootles \- a keyboard-first Mastodon and Bluesky client for the terminal
 .SH SYNOPSIS
 .B tootles
 .RI [ options ]
@@ -12,8 +12,9 @@ tootles \- a keyboard-first Mastodon client for the terminal
 .B tootles
 .RI { accounts | switch | logout | theme | doctor | completions }
 .SH DESCRIPTION
-Tootles provides Mastodon timelines, search, notifications, threads, profiles,
-posting, media, polls, lists, multiple accounts, and private local drafts.
+Tootles provides Mastodon and Bluesky timelines, search, notifications, threads,
+profiles, posting, media, multiple accounts, and private local drafts.
+Polls, lists, editing, and visibility options depend on the active network.
 Without an account, it starts an interactive offline demo.
 .SH OPTIONS
 .TP
@@ -37,6 +38,13 @@ Skip image capability queries and render previews as Unicode half blocks.
 .TP
 .B --snapshot FILE
 Render an offline demo to an SVG or text file without a terminal.
+.SH BLUESKY
+.B tootles login --provider bluesky your-handle.bsky.social
+prompts for a dedicated Bluesky app password without echoing it. The password is
+used once and is not saved; access and refresh tokens are saved privately.
+Use --pds URL for another account host and --app-password-stdin for standard input.
+Press a to switch between saved Mastodon and Bluesky accounts. Drafts are separate.
+Bluesky supports public posts and images; unavailable network features are hidden.
 .SH KEYS
 j/k or arrow keys move; 1 through 6 select timelines; n composes; r replies;
 f favorites; b boosts; s bookmarks; Enter opens a thread; p opens a profile;
@@ -74,7 +82,7 @@ and the directory is private (0700). Account-specific drafts are stored alongsid
 .B TOOTLES_CONFIG_DIR
 selects a configuration directory.
 .B TOOTLES_TOKEN
-supplies an existing token to the login command.
+supplies an existing Mastodon token to the login command.
 .B NO_COLOR
 selects high contrast and disables transitions.
 .SH SEE ALSO

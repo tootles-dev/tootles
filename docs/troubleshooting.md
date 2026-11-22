@@ -16,7 +16,20 @@ tootles --version
 If the version still looks old, `command -v tootles` shows which executable your
 shell runs. Cargo's default install location is `~/.cargo/bin/tootles`.
 
-## Login reports an unexpected response format
+## Bluesky login and account switching
+
+Use `tootles login --provider bluesky YOUR_HANDLE` with a dedicated app password
+from Bluesky settings. The prompt hides your input. An account on a different
+host also needs `--pds https://YOUR_HOST`. See [Bluesky setup](bluesky.md) for
+supported features and session troubleshooting.
+
+Press **a** in the TUI to switch accounts. This refreshes the saved account list,
+so an account connected from another terminal is available without restarting.
+Drafts belong to the account that created them. If a revoked or expired session
+cannot refresh, log in again; do not include app passwords or session tokens in
+bug reports.
+
+## Mastodon login reports an unexpected response format
 
 Version 0.1.0 combined several unrelated failures into the message “The server
 returned an unexpected response format.” Version 0.1.1 and later support nullable
@@ -56,7 +69,7 @@ include access tokens or authorization codes.
 
 Click an underlined URL, or select the post and press **L** to open its link
 picker. Choose a destination with the arrows and press **Enter**, or click its
-row. **o** opens the Mastodon post itself. The picker shows HTTP and HTTPS links;
+row. **o** opens the post itself. The picker shows HTTP and HTTPS links;
 reveal a content warning with **x** before opening links hidden behind it.
 
 With `--no-mouse`, use **L** and the keyboard. If a link does not launch, check

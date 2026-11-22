@@ -1,6 +1,6 @@
 # tootles
 
-**Your corner of the open web.** A thoughtful, keyboard-first Mastodon client, built in Rust for the terminal. Tokyo Night by default. Mouse support throughout. At home in a Hyprland workspace, a laptop terminal, or a quiet SSH session.
+**Your corner of the open web.** A thoughtful, keyboard-first Mastodon and Bluesky client, built in Rust for the terminal. Tokyo Night by default. Mouse support throughout. At home in a Hyprland workspace, a laptop terminal, or a quiet SSH session.
 
 ![Tootles in Tokyo Night](docs/preview.svg)
 
@@ -13,10 +13,11 @@
 | Build from source | **Rust 1.90+**, Cargo, and a C compiler/linker such as GCC or Clang. Install the toolchain with [rustup](https://rustup.rs). |
 | Run the installed CLI | An interactive UTF-8 terminal and a writable configuration directory. A true-color terminal is recommended; no Nerd Font is required. |
 | Connect to Mastodon | A Mastodon account and network access to its HTTPS server. Browser OAuth opens through `xdg-open` on Linux or `open` on macOS; the authorization URL can also be opened manually. |
+| Connect to Bluesky | A Bluesky account, an app password, and HTTPS access to your account host. Tootles saves session tokens and refreshes them as needed; the app password is not saved. |
 | View inline images | Kitty, Sixel, or iTerm2 graphics support for pixel images. Other terminals, including Alacritty, use colored half-block previews. No external image viewer is needed. |
 | Open original images in the default viewer | An image application associated with the file type. Linux also needs `xdg-open` from `xdg-utils`; macOS uses `open`. No particular image viewer or mpv is required. |
 | Play video or audio | The optional **mpv** executable on `PATH`. Window mode needs a graphical desktop; Terminal mode needs mpv's `kitty` or `tct` output. Alacritty uses `tct`. Playback is tested with **mpv 0.41.0**. |
-| Run the optional media regression tests | Python 3, **ffmpeg**, and mpv on a Unix system with PTY support. Python and the ffmpeg executable are development-test dependencies, not dependencies of the installed CLI. |
+| Run the optional regression scripts | Python 3.11+ on a Unix system with PTY support; video tests also need **ffmpeg** and mpv. Python and the ffmpeg executable are development-test dependencies, not dependencies of the installed CLI. |
 
 **Platform status:** Linux is built and tested. macOS code paths and Apple Silicon release packaging are present, but native builds and runtime remain unverified. Native Windows support is incomplete: default configuration paths, credential permissions, testing, and packaging still need work.
 
@@ -44,7 +45,20 @@ tootles theme tokyo-night      # persist your preferred theme
 tootles doctor                 # inspect terminal/configuration setup
 ```
 
-`login` opens your server's authorization page; approve Tootles, then paste the displayed authorization code into the terminal. The client never asks for your password. For an existing access token, use `tootles login SERVER --token-stdin` and supply it on standard input, or set `TOOTLES_TOKEN` for that command. Tokens need `read write follow` scopes. Do not put tokens in command arguments.
+Mastodon `login` opens your server's authorization page; approve Tootles, then paste the displayed authorization code into the terminal. The client never asks for your Mastodon password. For an existing access token, use `tootles login SERVER --token-stdin` and supply it on standard input, or set `TOOTLES_TOKEN` for that command. Tokens need `read write follow` scopes. Do not put tokens in command arguments.
+
+### Add a Bluesky account
+
+Create a dedicated app password in [Bluesky Settings → App passwords](https://bsky.app/settings/app-passwords), then run:
+
+```sh
+tootles login --provider bluesky your-handle.bsky.social
+tootles
+```
+
+Enter the app password at the hidden prompt. Use your handle, including its domain, or your DID. For an account on another host, add `--pds https://your-pds.example`. For scripting, `--app-password-stdin` reads the app password from standard input; never put it in command arguments. Mastodon login stays `tootles login YOUR_SERVER`.
+
+Press **a** in the TUI to switch between Mastodon, Bluesky, and the offline demo. `tootles accounts` lists the saved accounts; `tootles switch NUMBER` chooses the next launch's account. Each account keeps separate drafts. See [Bluesky setup and supported features](docs/bluesky.md).
 
 Without a connected account, Tootles clearly labels and opens its offline demo. Demo posts, reactions, relationships, lists, and votes live in memory; drafts and preferences persist locally. The demo does not contact a social server.
 
@@ -56,12 +70,14 @@ Without a connected account, Tootles clearly labels and opens its offline demo. 
 - **Search:** posts, people, and hashtags. Use the command palette's “Show people from search” to browse account results.
 - **Compose:** multiline Unicode editing, replies, content warnings, four visibility levels, language, media with alt text, and single- or multiple-choice polls. Edit and delete your own posts. Drafts autosave locally and are separated by account.
 - **Interactions:** favorite, boost, bookmark, follow/unfollow, mute/unmute, block/unblock, vote, open in browser, create lists, and add an author to a list.
-- **Accounts:** browser OAuth, verified token login, account switching, local logout, and separate credentials/drafts.
+- **Accounts:** Mastodon browser OAuth or verified token login, Bluesky app-password login with renewable sessions, account switching, local logout, and separate credentials/drafts.
 - **Interface:** responsive navigation/timeline/inspector panes, clickable controls, mouse scrolling, command palette, contextual shortcuts, reduced motion, compact mode, and four themes: **Tokyo Night**, Midnight, Paper, and High Contrast.
 - **Media gallery:** inline image previews for posts and local attachments, full alt text, and optional mpv video/audio playback in a window or the terminal.
-- **Extensibility:** an asynchronous `SocialProvider` trait keeps Mastodon API details outside the UI. A second, stateful demo provider exercises the boundary. Other live networks can be added as Rust adapters.
+- **Networks:** Mastodon and Bluesky adapters share the interface. Controls follow the active network’s capabilities; Bluesky uses public posts and image uploads, while Mastodon also offers visibility choices, polls, and editing. A stateful offline demo and the asynchronous `SocialProvider` trait support development of other adapters.
 
-Network requests run in background tasks. Account and request generations keep stale responses from replacing the current view. Read requests retry transient connection errors; writes are not automatically replayed. Publishing carries an idempotency key to make an intentional retry safe. Server hide/warn filters and sensitive content are respected by the adapter and interface.
+The feature list above describes the client as a whole; see the [Bluesky feature table](docs/bluesky.md#supported-features) for network-specific support.
+
+Network requests run in background tasks. Account and request generations keep stale responses from replacing the current view. Mastodon reads retry transient connection errors. Bluesky refreshes expired sessions and retries requests after an explicit authentication rejection; ambiguous write failures are not automatically replayed. Publishing carries an idempotency key to make an intentional retry safe. Server hide/warn filters and sensitive content are respected by the adapter and interface.
 
 ## Keyboard and mouse
 
@@ -92,7 +108,7 @@ Press **?** at any time outside an input for help, or **Ctrl+K** / **:** for the
 
 Click navigation items, post cards, action chips, fields, and modal controls. The wheel moves through posts or scrolls the inspector when hovered. Hold your terminal's text-selection modifier (often Shift) to select terminal text, or launch with `--no-mouse`.
 
-Post URLs are underlined and clickable, including links wrapped across lines. Press `L` or click the post's **Links** action to choose among its destinations; arrows select, `Enter` or a click opens the link, and `Esc` closes the picker. `o` continues to open the Mastodon post itself. Only HTTP and HTTPS destinations without embedded credentials are offered, and links behind a content warning remain hidden until you reveal the post.
+Post URLs are underlined and clickable, including links wrapped across lines. Press `L` or click the post's **Links** action to choose among its destinations; arrows select, `Enter` or a click opens the link, and `Esc` closes the picker. `o` opens the post itself on its network. Only HTTP and HTTPS destinations without embedded credentials are offered, and links behind a content warning remain hidden until you reveal the post.
 
 ### Writing a post
 
@@ -122,6 +138,8 @@ Press `m` on a media post to open its gallery. The image rendering label shows *
 
 For images, press `v` to choose **Terminal → Default image viewer → Browser**, then `Enter` (local images omit Browser). **Default image viewer** opens the original image in your operating system's associated application, using a private, validated copy of the original bytes for both online and local images. No separate Tootles image-viewer dependency is required; Linux uses `xdg-open` from `xdg-utils` and your configured image application. `o` opens an online original in your browser or a local file in its default application. External applications open only when you explicitly request them.
 
+For Bluesky, the source is the full-size image supplied by its CDN, which may differ from the original upload. Tootles preserves that source without additional scaling when opening the default viewer.
+
 Use arrows or `h`/`l` to switch attachments. For video or audio, `v` cycles **Window → Terminal → Browser** playback; `Enter` plays the selected item. Window and Terminal modes use an optional, separately installed **mpv** executable. Terminal mode uses Kitty graphics when detected, with a true-color text fallback; `q` exits mpv and returns to Tootles. Sensitive attachments stay hidden until you reveal the post with `x`. Media requests receive no account access token. See [the media guide](docs/media.md) for controls, resource limits, and temporary-file behavior.
 
 For login or installation problems, see [troubleshooting](docs/troubleshooting.md).
@@ -130,7 +148,7 @@ For login or installation problems, see [troubleshooting](docs/troubleshooting.m
 
 True-color UTF-8 terminals work best. No Nerd Font is required. The full layout appears in wider windows; side panes collapse on narrower splits. `--no-motion` disables transitions. `NO_COLOR` selects the High Contrast palette and disables motion. See [Hyprland setup](docs/hyprland.md) for terminal launch examples.
 
-Preferences and tokens live in `$XDG_CONFIG_HOME/tootles/config.toml`, or `~/.config/tootles/config.toml`. `--config-dir PATH` or `TOOTLES_CONFIG_DIR` selects another location. On Unix, the directory is `0700` and files are `0600`. Tokens are stored as **plaintext protected by filesystem permissions**, not a system keyring. Draft files are private and scoped to each account. `tootles logout` removes the local token; revoke the application in your server settings to invalidate it remotely.
+Preferences and tokens live in `$XDG_CONFIG_HOME/tootles/config.toml`, or `~/.config/tootles/config.toml`. `--config-dir PATH` or `TOOTLES_CONFIG_DIR` selects another location. On Unix, the directory is `0700` and files are `0600`. Tokens are stored as **plaintext protected by filesystem permissions**, not a system keyring. Draft files are private and scoped to each account. `tootles logout` removes locally saved credentials. Revoke the Mastodon application or Bluesky app password in the service’s settings to invalidate access remotely.
 
 Example preferences (accounts are populated by `login`):
 
@@ -141,7 +159,7 @@ compact = false
 refresh_seconds = 60
 ```
 
-Background polling refreshes active timelines when you are at the top with no modal open. Manual refresh is always available. This release uses REST polling rather than streaming. It does not yet include scheduled posts, quote-post composition, moderation reports, profile editing, follower management, push notifications, or every server-specific feature. Only Mastodon is connected to a live network in this release; the provider interface is a compiled extension point, not a runtime plugin system.
+Background polling refreshes active timelines when you are at the top with no modal open. Manual refresh is always available. This release uses HTTP polling rather than streaming. It does not yet include scheduled posts, quote-post composition, moderation reports, profile editing, follower management, push notifications, or every server-specific feature. Mastodon and Bluesky are supported network adapters; the provider interface is a compiled extension point, not a runtime plugin system.
 
 ## Completions, desktop entry, and releases
 
@@ -164,10 +182,11 @@ cargo build --release --locked
 cargo run -- --snapshot docs/preview.svg --width 144 --height 44
 cargo run --example render_previews -- docs
 python3 scripts/smoke-terminal.py
+python3 scripts/smoke-bluesky.py   # local mock server; no real account or posts
 python3 scripts/smoke-video.py    # optional; requires mpv and ffmpeg
 python3 scripts/test-terminal-playback.py --binary target/release/tootles --expect-fixed
 ```
 
-Tests use a local mock server and offline providers. They do not require an account or publish anything. Terminal rendering tests exercise all themes, modals, compact layouts, content-warning privacy, and tiny window sizes. The optional terminal playback regression requires Python 3, mpv, and ffmpeg on Unix; it generates local clips and checks playback completion, cancellation, resize, player failures, and terminal restoration in a PTY. Live OAuth and actual graphics protocol/compositor behavior require an authenticated server and a supporting terminal to verify end-to-end.
+Tests use local mock servers and offline providers, including Bluesky session refresh and adapter contracts. They do not require an account or publish anything. Terminal rendering tests exercise all themes, modals, compact layouts, content-warning privacy, and tiny window sizes. The optional terminal playback regression requires Python 3, mpv, and ffmpeg on Unix; it generates local clips and checks playback completion, cancellation, resize, player failures, and terminal restoration in a PTY. Live OAuth and actual graphics protocol/compositor behavior require an authenticated server and a supporting terminal to verify end-to-end.
 
 Read the [architecture and adapter guide](docs/architecture.md) to add another network. Built with [Ratatui](https://ratatui.rs/), [TachyonFX](https://github.com/ratatui/tachyonfx), Crossterm, Tokio, and Reqwest. The reusable-component approach of [ratcn](https://github.com/kristoferlund/ratcn) informed the interface; its components are not a dependency. MIT licensed.

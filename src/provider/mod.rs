@@ -1,6 +1,7 @@
 use crate::model::*;
 use anyhow::{Result, bail};
 use async_trait::async_trait;
+pub mod bluesky;
 pub mod demo;
 pub mod mastodon;
 

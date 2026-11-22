@@ -317,6 +317,29 @@ pub fn commands(query: &str) -> Vec<&'static Command> {
         .collect()
 }
 
+/// Shared capability policy for the palette, mouse actions, and keyboard commands.
+pub fn command_available(id: &str, caps: &Capabilities) -> bool {
+    match id {
+        "compose" | "reply" | "send" => caps.posting,
+        "edit" => caps.editing && caps.posting,
+        "bookmark" | "bookmarks" => caps.bookmarks,
+        "local" => caps.local_timeline,
+        "federated" => caps.federated_timeline,
+        "lists" | "create_list" | "add_to_list" => caps.lists,
+        "vote" | "submit_vote" | "poll_multiple" | "poll_duration" => caps.polls,
+        "visibility" => caps.post_visibility,
+        "sensitive" => caps.content_warnings,
+        "attach" | "browse" => caps.media,
+        _ => true,
+    }
+}
+pub fn available_commands(query: &str, caps: &Capabilities) -> Vec<&'static Command> {
+    commands(query)
+        .into_iter()
+        .filter(|c| command_available(c.id, caps))
+        .collect()
+}
+
 pub struct View {
     pub feed: Feed,
     pub posts: Vec<Post>,

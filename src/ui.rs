@@ -389,6 +389,11 @@ fn sidebar(frame: &mut Frame, view: &mut View, area: Rect, p: Palette) {
         ("5", "Bookmarks", Feed::Bookmarks),
         ("6", "Favorites", Feed::Favourites),
     ];
+    let nav: Vec<_> = nav
+        .into_iter()
+        .filter(|(_, _, feed)| view.capabilities.supports_feed(feed))
+        .collect();
+    let compose_y = 3 + nav.len() as u16 * 2;
     for (index, (key, label, feed)) in nav.into_iter().enumerate() {
         let r = row(inside, 2 + index as u16 * 2);
         let active = view.feed == feed;
@@ -413,28 +418,29 @@ fn sidebar(frame: &mut Frame, view: &mut View, area: Rect, p: Palette) {
         );
         hit(view, r, Hit::Navigate(feed));
     }
-    if inside.height > 16 {
+    if inside.height > compose_y && view.capabilities.posting {
         chip(
             frame,
             view,
-            row(inside, 15),
+            row(inside, compose_y),
             "+  Write a post",
             "compose",
             true,
             p,
         );
     }
-    if inside.height > 22 {
-        text(frame, row(inside, 18), "EXPLORE", p.muted());
-        for (i, (label, id)) in [
+    if inside.height > compose_y + 7 {
+        text(frame, row(inside, compose_y + 3), "EXPLORE", p.muted());
+        let explore: Vec<_> = [
             ("/  Search", "search"),
             ("l  Your lists", "lists"),
             ("d  Saved drafts", "drafts"),
         ]
         .into_iter()
-        .enumerate()
-        {
-            let r = row(inside, 20 + i as u16 * 2);
+        .filter(|(_, id)| command_available(id, &view.capabilities))
+        .collect();
+        for (i, (label, id)) in explore.into_iter().enumerate() {
+            let r = row(inside, compose_y + 5 + i as u16 * 2);
             text(frame, r, label, Style::default().fg(p.soft));
             command(view, r, id);
         }
@@ -928,7 +934,9 @@ fn post_card(
             ),
             Style::default().fg(p.purple),
         );
-        command(view, row(inside, y), &format!("post:{index}:vote"));
+        if view.capabilities.polls {
+            command(view, row(inside, y), &format!("post:{index}:vote"));
+        }
         y += 1;
     }
     y += 1;
@@ -957,6 +965,9 @@ fn post_card(
                 post.bookmarked,
             ),
         ] {
+            if !command_available(id, &view.capabilities) {
+                continue;
+            }
             let width = (label.width() as u16 + 2).min(inside.right().saturating_sub(x));
             if width == 0 {
                 break;
@@ -1352,10 +1363,11 @@ fn inspector(frame: &mut Frame, view: &mut View, area: Rect, p: Palette) {
             Some(("x  Reveal hidden content", "reveal"))
         } else if !post.media.is_empty() {
             Some(("m  Open media gallery", "media"))
-        } else if post
-            .poll
-            .as_ref()
-            .is_some_and(|poll| !poll.expired && !poll.voted)
+        } else if view.capabilities.polls
+            && post
+                .poll
+                .as_ref()
+                .is_some_and(|poll| !poll.expired && !poll.voted)
         {
             Some(("v  Add your vote", "vote"))
         } else {
@@ -1376,7 +1388,9 @@ fn inspector(frame: &mut Frame, view: &mut View, area: Rect, p: Palette) {
 
 fn footer(frame: &mut Frame, view: &mut View, area: Rect, p: Palette) {
     frame.render_widget(Block::default().style(Style::default().bg(p.panel)), area);
-    let hints = if area.width >= 110 {
+    let hints = if area.width >= 110 && !view.capabilities.bookmarks {
+        "  j/k move   Enter thread   r reply   f favorite   b boost   n compose   / search   Ctrl+K commands   ? help"
+    } else if area.width >= 110 {
         "  j/k move   Enter thread   r reply   f favorite   b boost   s save   n compose   / search   Ctrl+K commands   ? help"
     } else if area.width >= 65 {
         "  j/k move  Enter thread  n compose  / search  Ctrl+K commands  ? help"
@@ -1656,7 +1670,7 @@ fn modal(frame: &mut Frame, view: &mut View, p: Palette) {
                         format!(
                             "{} · {} characters{}",
                             d.visibility.label(),
-                            d.text.chars().count(),
+                            view.capabilities.text_length(&d.text),
                             if d.reply_to.is_some() {
                                 " · reply"
                             } else {
@@ -1821,21 +1835,45 @@ fn help_modal(frame: &mut Frame, view: &mut View, p: Palette) {
         ("MOVE AROUND", ""),
         ("j / k  or  ↑ / ↓", "Previous / next post"),
         ("PageUp / PageDown", "Move a page · Home / End jump"),
-        ("1 · 2 · 3", "Home · Local · Federated"),
-        ("4 · 5 · 6", "Notifications · Bookmarks · Favorites"),
+        if view.capabilities.local_timeline && view.capabilities.federated_timeline {
+            ("1 · 2 · 3", "Home · Local · Federated")
+        } else {
+            ("1", "Home")
+        },
+        if view.capabilities.bookmarks {
+            ("4 · 5 · 6", "Notifications · Bookmarks · Favorites")
+        } else {
+            ("4 · 6", "Notifications · Favorites")
+        },
         ("Enter", "Open conversation"),
         ("/   ·   #", "Search everything · browse hashtag"),
         ("", ""),
         ("JOIN THE CONVERSATION", ""),
-        ("n   ·   r   ·   e", "New post · reply · edit your post"),
-        ("f   ·   b   ·   s", "Favorite · boost · bookmark"),
+        if view.capabilities.editing {
+            ("n   ·   r   ·   e", "New post · reply · edit your post")
+        } else {
+            ("n   ·   r", "New post · reply")
+        },
+        if view.capabilities.bookmarks {
+            ("f   ·   b   ·   s", "Favorite · boost · bookmark")
+        } else {
+            ("f   ·   b", "Favorite · repost")
+        },
         ("p   ·   F", "View author · follow / unfollow"),
-        ("x   ·   v", "Reveal content warning · vote"),
+        if view.capabilities.polls {
+            ("x   ·   v", "Reveal content warning · vote")
+        } else {
+            ("x", "Reveal hidden content")
+        },
         ("o   ·   L   ·   m", "Open post · post links · media"),
         ("", ""),
         ("YOUR WORKSPACE", ""),
         ("Ctrl+K  or  :", "Find any command"),
-        ("a   ·   l   ·   d", "Accounts · lists · saved drafts"),
+        if view.capabilities.lists {
+            ("a   ·   l   ·   d", "Accounts · lists · saved drafts")
+        } else {
+            ("a   ·   d", "Accounts · saved drafts")
+        },
         ("T   ·   c   ·   i", "Theme · compact view · detail pane"),
         ("J / K", "Scroll detail pane"),
         ("R   ·   q", "Refresh · quit"),
@@ -1955,15 +1993,19 @@ fn file_browser_modal(frame: &mut Frame, view: &mut View, p: Palette) {
             );
         }
         let filter = format!("f  {}", view.file_browser.filter.label());
-        chip(
-            frame,
-            view,
-            portion(area, 28, 6, 19, 1),
-            &filter,
-            "browse_filter",
-            false,
-            p,
-        );
+        if view.capabilities.image_only_media {
+            text(frame, portion(area, 28, 6, 19, 1), "Images only", p.muted());
+        } else {
+            chip(
+                frame,
+                view,
+                portion(area, 28, 6, 19, 1),
+                &filter,
+                "browse_filter",
+                false,
+                p,
+            );
+        }
         let hidden = if view.file_browser.show_hidden {
             ". Hidden: shown"
         } else {
@@ -2121,7 +2163,12 @@ fn file_browser_modal(frame: &mut Frame, view: &mut View, p: Palette) {
             picker.omitted
         )
     } else {
-        "Images, video, and audio · files stay local until you publish".into()
+        if view.capabilities.image_only_media {
+            "Images only · files stay local until you publish"
+        } else {
+            "Images, video, and audio · files stay local until you publish"
+        }
+        .into()
     };
     if area.height >= 6 {
         text(
@@ -2207,7 +2254,7 @@ fn palette_modal(frame: &mut Frame, view: &mut View, query: &str, selected: usiz
         "─".repeat(area.width as usize),
         Style::default().fg(p.line),
     );
-    let options = commands(query);
+    let options = available_commands(query, &view.capabilities);
     let visible = area.height.saturating_sub(4) as usize;
     let offset = selected.saturating_sub(visible.saturating_sub(1));
     if options.is_empty() {
@@ -2480,15 +2527,39 @@ fn compose_modal(frame: &mut Frame, view: &mut View, p: Palette) {
         "What is on your mind?"
     };
     let area = modal_frame(frame, view, 92, 35, title, p);
-    let count = view.composer.text.chars().count() + view.composer.spoiler_text.chars().count();
+    if !view
+        .capabilities
+        .composer_fields()
+        .contains(&view.compose_field)
+    {
+        view.compose_field = 0;
+        view.compose_cursor = view.composer.text.len();
+    }
+    let count = view.capabilities.compose_length(&view.composer);
     let max = view.capabilities.max_characters;
     let account = format!(
-        "{}  ·  {}",
+        "{}  ·  {}  ·  {}",
         view.me.name(),
-        view.composer.visibility.label()
+        view.capabilities.name,
+        if view.capabilities.post_visibility {
+            view.composer.visibility.label()
+        } else {
+            "Public posts"
+        }
     );
     text(frame, row(area, 0), account, p.muted());
-    let count_label = format!("{count} / {max}");
+    let bytes_exceeded = view
+        .capabilities
+        .max_text_bytes
+        .is_some_and(|limit| view.composer.text.len() > limit);
+    let count_label = format!(
+        "{count} / {max}{}",
+        if bytes_exceeded {
+            " · byte limit exceeded"
+        } else {
+            ""
+        }
+    );
     if area.width > count_label.width() as u16 + 20 {
         text(
             frame,
@@ -2499,11 +2570,15 @@ fn compose_modal(frame: &mut Frame, view: &mut View, p: Palette) {
                 1,
             ),
             count_label,
-            Style::default().fg(if count > max { p.coral } else { p.green }),
+            Style::default().fg(if count > max || bytes_exceeded {
+                p.coral
+            } else {
+                p.green
+            }),
         );
     }
-    // A small terminal shows the focused field and essential controls. All six
-    // fields remain accessible with Tab, with the same editor and cursor rules.
+    // A small terminal shows the focused field and essential controls. Tab
+    // visits only fields supported by the active account.
     if area.height < 26 || area.width < 48 {
         let (label, value, placeholder) = match view.compose_field {
             0 => (
@@ -2550,7 +2625,7 @@ fn compose_modal(frame: &mut Frame, view: &mut View, p: Palette) {
         );
         let y = 2 + h;
         compose_controls(frame, view, area, y, p);
-        if y + 1 < area.height.saturating_sub(1) {
+        if view.capabilities.media && y + 1 < area.height.saturating_sub(1) {
             chip(
                 frame,
                 view,
@@ -2589,7 +2664,10 @@ fn compose_modal(frame: &mut Frame, view: &mut View, p: Palette) {
         }
         return;
     }
-    let body_h = area.height.saturating_sub(24).clamp(5, 9);
+    let optional_rows = u16::from(view.capabilities.content_warnings) * 3
+        + u16::from(view.capabilities.polls) * 3
+        + u16::from(view.capabilities.media) * 5;
+    let body_h = area.height.saturating_sub(13 + optional_rows).clamp(5, 18);
     let post = view.composer.text.clone();
     editor(
         frame,
@@ -2602,84 +2680,94 @@ fn compose_modal(frame: &mut Frame, view: &mut View, p: Palette) {
         p,
     );
     let mut y = 2 + body_h;
-    let cw = view.composer.spoiler_text.clone();
-    editor(
-        frame,
-        view,
-        Rect::new(area.x, area.y + y, area.width, 3),
-        "Content warning · optional",
-        &cw,
-        1,
-        "Give people a choice before they read",
-        p,
-    );
-    y += 3;
-    let half = area.width / 2;
-    let path = view.attachment_path.clone();
-    let alt = view.attachment_alt.clone();
-    editor(
-        frame,
-        view,
-        Rect::new(area.x, area.y + y, half.saturating_sub(1), 3),
-        "File · browse or paste a path",
-        &path,
-        2,
-        "F3 to browse images, video, or audio",
-        p,
-    );
-    editor(
-        frame,
-        view,
-        Rect::new(area.x + half, area.y + y, area.width - half, 3),
-        "Alt text",
-        &alt,
-        3,
-        "Describe what is in the attachment",
-        p,
-    );
-    y += 3;
-    let attached = view.composer.attachments.len();
-    for (x, width, label, id) in [
-        (0, 16, "F3 Browse files", "browse"),
-        (18, 12, "+ Add file", "attach"),
-        (32, 11, "Preview", "preview_attachment"),
-    ] {
-        chip(
+    if view.capabilities.content_warnings {
+        let cw = view.composer.spoiler_text.clone();
+        editor(
             frame,
             view,
-            portion(area, x, y, width, 1),
-            label,
-            id,
-            false,
+            Rect::new(area.x, area.y + y, area.width, 3),
+            "Content warning · optional",
+            &cw,
+            1,
+            "Give people a choice before they read",
             p,
         );
+        y += 3;
     }
-    let status = portion(area, 45, y, area.width.saturating_sub(45), 1);
-    text(
-        frame,
-        status,
-        format!(
-            "{attached} attached{}",
-            if attached > 0 { " · remove last" } else { "" }
-        ),
-        Style::default().fg(p.purple),
-    );
-    if attached > 0 {
-        command(view, status, "remove_attachment");
+    if view.capabilities.media {
+        let half = area.width / 2;
+        let path = view.attachment_path.clone();
+        let alt = view.attachment_alt.clone();
+        editor(
+            frame,
+            view,
+            Rect::new(area.x, area.y + y, half.saturating_sub(1), 3),
+            "File · browse or paste a path",
+            &path,
+            2,
+            if view.capabilities.image_only_media {
+                "F3 to browse images"
+            } else {
+                "F3 to browse images, video, or audio"
+            },
+            p,
+        );
+        editor(
+            frame,
+            view,
+            Rect::new(area.x + half, area.y + y, area.width - half, 3),
+            "Alt text",
+            &alt,
+            3,
+            "Describe what is in the attachment",
+            p,
+        );
+        y += 3;
+        let attached = view.composer.attachments.len();
+        for (x, width, label, id) in [
+            (0, 16, "F3 Browse files", "browse"),
+            (18, 12, "+ Add file", "attach"),
+            (32, 11, "Preview", "preview_attachment"),
+        ] {
+            chip(
+                frame,
+                view,
+                portion(area, x, y, width, 1),
+                label,
+                id,
+                false,
+                p,
+            );
+        }
+        let status = portion(area, 45, y, area.width.saturating_sub(45), 1);
+        text(
+            frame,
+            status,
+            format!(
+                "{attached} attached{}",
+                if attached > 0 { " · remove last" } else { "" }
+            ),
+            Style::default().fg(p.purple),
+        );
+        if attached > 0 {
+            command(view, status, "remove_attachment");
+        }
+        y += 2;
     }
-    y += 2;
-    let poll = view.poll_input.clone();
-    editor(
-        frame,
-        view,
-        Rect::new(area.x, area.y + y, area.width, 3),
-        "Poll · separate options with semicolons",
-        &poll,
-        4,
-        "First choice; Second choice",
-        p,
-    );
-    y += 3;
+    if view.capabilities.polls {
+        let poll = view.poll_input.clone();
+        editor(
+            frame,
+            view,
+            Rect::new(area.x, area.y + y, area.width, 3),
+            "Poll · separate options with semicolons",
+            &poll,
+            4,
+            "First choice; Second choice",
+            p,
+        );
+        y += 3;
+    }
     let language = view.composer.language.clone();
     editor(
         frame,
@@ -2691,7 +2779,7 @@ fn compose_modal(frame: &mut Frame, view: &mut View, p: Palette) {
         "en",
         p,
     );
-    if area.width > 15 {
+    if view.capabilities.polls && area.width > 15 {
         let poll_label = if view.composer.poll_multiple {
             "☑ Multiple choice"
         } else {
@@ -2743,16 +2831,25 @@ fn compose_controls(frame: &mut Frame, view: &mut View, area: Rect, y: u16, p: P
     }
     let visibility = format!("◉ {}", view.composer.visibility.label());
     let vis_w = (visibility.width() as u16 + 2).min(area.width);
-    chip(
-        frame,
-        view,
-        Rect::new(area.x, area.y + y, vis_w, 1),
-        &visibility,
-        "visibility",
-        false,
-        p,
-    );
-    if area.width > vis_w + 3 {
+    if view.capabilities.post_visibility {
+        chip(
+            frame,
+            view,
+            Rect::new(area.x, area.y + y, vis_w, 1),
+            &visibility,
+            "visibility",
+            false,
+            p,
+        );
+    } else {
+        text(
+            frame,
+            row(area, y),
+            "◉ Public · visible to everyone",
+            p.muted(),
+        );
+    }
+    if view.capabilities.content_warnings && area.width > vis_w + 3 {
         let sensitive = if view.composer.sensitive {
             "☑ Sensitive"
         } else {

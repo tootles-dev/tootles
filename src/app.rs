@@ -1,11 +1,11 @@
 use crate::{
     auth,
-    config::{self, Config},
+    config::{self, Config, SavedAccount},
     editor,
     file_picker::{self, FileKind, Listing},
     links,
     model::*,
-    provider::{SocialProvider, demo::DemoProvider, mastodon::Mastodon},
+    provider::{SocialProvider, bluesky::Bluesky, demo::DemoProvider, mastodon::Mastodon},
     view::*,
 };
 use anyhow::{Result, bail};
@@ -95,18 +95,9 @@ impl App {
         };
         let (provider, account_id): (Arc<dyn SocialProvider>, String) =
             if !demo && let Some(a) = config.active_account() {
-                if a.provider != "mastodon" {
-                    bail!(
-                        "Unknown provider '{}'. This build includes Mastodon and Demo adapters.",
-                        a.provider
-                    );
-                }
                 view.instance = display_instance(&a.instance);
                 view.demo = false;
-                (
-                    Arc::new(Mastodon::new(&a.instance, &a.token)?),
-                    a.id.clone(),
-                )
+                (saved_provider(a, root.clone())?, a.id.clone())
             } else {
                 view.demo = true;
                 view.instance = "the open web · demo".into();
@@ -195,6 +186,17 @@ impl App {
         self.refresh_at = Instant::now();
     }
     fn navigate(&mut self, feed: Feed) {
+        if !self.view.capabilities.supports_feed(&feed) {
+            self.notice(
+                format!(
+                    "{} is not available for {}",
+                    feed.title(),
+                    self.view.capabilities.name
+                ),
+                false,
+            );
+            return;
+        }
         if self.view.feed != feed {
             self.history.push(self.view.feed.clone());
         }
@@ -508,8 +510,10 @@ impl App {
             }
             Hit::Command(cmd) => self.command(&cmd),
             Hit::ComposerField(i) => {
-                self.view.compose_field = i.min(5);
-                self.view.compose_cursor = self.compose_text().len();
+                if self.view.capabilities.composer_fields().contains(&i) {
+                    self.view.compose_field = i;
+                    self.view.compose_cursor = self.compose_text().len();
+                }
             }
             Hit::FileSelect(i) => {
                 self.view.file_browser.selected =
@@ -548,7 +552,10 @@ impl App {
                 self.view.file_browser.selected,
                 self.view.file_browser.entries.len(),
             ),
-            Modal::Palette { query, selected } => (*selected, commands(query).len()),
+            Modal::Palette { query, selected } => (
+                *selected,
+                available_commands(query, &self.view.capabilities).len(),
+            ),
             Modal::Accounts { selected } => (*selected, self.view.accounts.len()),
             Modal::Lists { selected } => (*selected, self.view.lists.len()),
             Modal::People { selected } => (*selected, self.view.people.len()),
@@ -625,11 +632,11 @@ impl App {
                 KeyCode::F(3) => self.command("browse"),
                 KeyCode::F(4) => self.command("send"),
                 KeyCode::Tab => {
-                    self.view.compose_field = (self.view.compose_field + 1) % 6;
+                    self.cycle_compose_field(1);
                     self.view.compose_cursor = self.compose_text().len();
                 }
                 KeyCode::BackTab => {
-                    self.view.compose_field = (self.view.compose_field + 5) % 6;
+                    self.cycle_compose_field(-1);
                     self.view.compose_cursor = self.compose_text().len();
                 }
                 _ => {
@@ -696,7 +703,7 @@ impl App {
                     self.move_selection(-1);
                 } else {
                     editor::edit(&mut query, &mut self.view.input_cursor, key, false);
-                    let len = commands(&query).len();
+                    let len = available_commands(&query, &self.view.capabilities).len();
                     self.view.modal = Modal::Palette {
                         query,
                         selected: selected.min(len.saturating_sub(1)),
@@ -869,7 +876,7 @@ impl App {
                 self.submit_input(&purpose, value);
             }
             Modal::Palette { query, selected } => {
-                if let Some(c) = commands(&query).get(selected) {
+                if let Some(c) = available_commands(&query, &self.view.capabilities).get(selected) {
                     let id = c.id;
                     self.view.modal = Modal::None;
                     self.command(id);
@@ -964,6 +971,16 @@ impl App {
             }
             return;
         }
+        if !command_available(cmd, &self.view.capabilities) {
+            self.notice(
+                format!(
+                    "This action is not available for {}",
+                    self.view.capabilities.name
+                ),
+                false,
+            );
+            return;
+        }
         match cmd {
             "confirm" => {
                 if let Modal::Confirm { action, .. } = self.view.modal.clone() {
@@ -1015,14 +1032,26 @@ impl App {
                     mentions.extend(post.mentions.clone());
                     mentions.retain(|a| a != &self.view.me.acct);
                     mentions.dedup();
-                    let text = mentions
-                        .iter()
-                        .map(|a| format!("@{a} "))
-                        .collect::<String>();
+                    let text = if self.view.capabilities.name == "Bluesky" {
+                        String::new()
+                    } else {
+                        mentions
+                            .iter()
+                            .map(|a| format!("@{a} "))
+                            .collect::<String>()
+                    };
                     self.open_composer(Compose {
                         text,
-                        spoiler_text: post.spoiler_text,
-                        visibility: post.visibility,
+                        spoiler_text: if self.view.capabilities.content_warnings {
+                            post.spoiler_text
+                        } else {
+                            String::new()
+                        },
+                        visibility: if self.view.capabilities.post_visibility {
+                            post.visibility
+                        } else {
+                            Visibility::Public
+                        },
                         reply_to: Some(post.id),
                         ..Compose::default()
                     });
@@ -1177,7 +1206,20 @@ impl App {
                     self.notice("Select a post with a poll", false);
                 }
             }
-            "accounts" => self.view.modal = Modal::Accounts { selected: 0 },
+            "accounts" => match Config::load(self.root.as_deref()) {
+                Ok(latest) => {
+                    self.config = latest;
+                    self.view.accounts = account_labels(&self.config, &self.account_id);
+                    let selected = self
+                        .view
+                        .accounts
+                        .iter()
+                        .position(|account| account.active)
+                        .unwrap_or(0);
+                    self.view.modal = Modal::Accounts { selected };
+                }
+                Err(error) => self.notice(format!("Cannot read saved accounts: {error}"), true),
+            },
             "lists" | "add_to_list" => {
                 if !self.view.capabilities.lists {
                     self.notice("This network does not support lists", true);
@@ -1270,8 +1312,22 @@ impl App {
                     self.notice("Attachment path must point to an existing file", true);
                     return;
                 }
-                if self.view.composer.attachments.len() >= 4 {
-                    self.notice("A post can contain up to four attachments", true);
+                if self.view.capabilities.image_only_media
+                    && file_picker::media_kind(&path) != Some(FileKind::Image)
+                {
+                    self.notice("This network accepts image attachments only", true);
+                    return;
+                }
+                if self.view.composer.attachments.len()
+                    >= self.view.capabilities.max_media_attachments
+                {
+                    self.notice(
+                        format!(
+                            "A post can contain up to {} attachments",
+                            self.view.capabilities.max_media_attachments
+                        ),
+                        true,
+                    );
                     return;
                 }
                 self.view.composer.attachments.push(Attachment {
@@ -1325,6 +1381,10 @@ impl App {
             }
             "browse_go" => self.file_browser_location(),
             "browse_filter" => {
+                if self.view.capabilities.image_only_media {
+                    self.notice("This network accepts image attachments only", false);
+                    return;
+                }
                 self.view.file_browser.filter = self.view.file_browser.filter.next();
                 self.browse_directory(self.view.file_browser.directory.clone());
             }
@@ -1347,8 +1407,14 @@ impl App {
             self.notice("This network does not support attachments", true);
             return;
         }
-        if self.view.composer.attachments.len() >= 4 {
-            self.notice("A post can contain up to four attachments", true);
+        if self.view.composer.attachments.len() >= self.view.capabilities.max_media_attachments {
+            self.notice(
+                format!(
+                    "A post can contain up to {} attachments",
+                    self.view.capabilities.max_media_attachments
+                ),
+                true,
+            );
             return;
         }
         let last = &self.view.file_browser.directory;
@@ -1367,6 +1433,9 @@ impl App {
             {
                 directory = parent.to_owned();
             }
+        }
+        if self.view.capabilities.image_only_media {
+            self.view.file_browser.filter = file_picker::MediaFilter::Images;
         }
         self.view.modal = Modal::FileBrowser;
         self.browse_directory(directory);
@@ -1435,6 +1504,12 @@ impl App {
         }
     }
     fn choose_attachment(&mut self, path: &Path) {
+        if self.view.capabilities.image_only_media
+            && file_picker::media_kind(path) != Some(FileKind::Image)
+        {
+            self.notice("This network accepts image attachments only", true);
+            return;
+        }
         let Some(value) = path.to_str() else {
             self.view.file_browser.error =
                 Some("This filename is not valid Unicode. Rename it before attaching.".into());
@@ -1604,7 +1679,16 @@ impl App {
             return;
         }
         if compose.idempotency_key.is_empty() {
-            compose.idempotency_key = uuid::Uuid::new_v4().to_string();
+            let unique = uuid::Uuid::new_v4();
+            compose.idempotency_key = if self.view.capabilities.name == "Bluesky" {
+                let micros = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_micros();
+                format!("{micros}:{unique}")
+            } else {
+                unique.to_string()
+            };
         }
         if compose.poll_expires_in == 0 {
             compose.poll_expires_in = 86400;
@@ -1617,6 +1701,15 @@ impl App {
         self.view.compose_field = 0;
         self.view.modal = Modal::Compose;
         self.draft_dirty = false;
+    }
+    fn cycle_compose_field(&mut self, direction: isize) {
+        let fields = self.view.capabilities.composer_fields();
+        let index = fields
+            .iter()
+            .position(|&field| field == self.view.compose_field)
+            .unwrap_or(0);
+        self.view.compose_field =
+            fields[(index as isize + direction).rem_euclid(fields.len() as isize) as usize];
     }
     fn compose_text(&self) -> &str {
         match self.view.compose_field {
@@ -1694,8 +1787,7 @@ impl App {
         // CLI login/logout may change credentials while this TUI is open.
         // Merge only preferences into the latest file; do not write a stale
         // account snapshot back over credentials added or removed elsewhere.
-        let result = (|| -> Result<Config> {
-            let mut latest = Config::load(self.root.as_deref())?;
+        let result = config::update(self.root.as_deref(), |latest| {
             if let Some(id) = active {
                 if !latest.accounts.iter().any(|account| account.id == id) {
                     bail!(
@@ -1707,9 +1799,8 @@ impl App {
             latest.theme = theme_key(self.view.theme).into();
             latest.reduced_motion = self.view.reduced_motion;
             latest.compact = self.view.compact;
-            latest.save(self.root.as_deref())?;
-            Ok(latest)
-        })();
+            Ok(latest.clone())
+        });
         match result {
             Ok(latest) => {
                 self.config = latest;
@@ -1779,40 +1870,48 @@ impl App {
         if !self.save_current_draft(false) {
             return;
         }
-        let (provider, id, instance, demo): (Arc<dyn SocialProvider>, String, String, bool) =
-            if index == 0 {
-                (
-                    Arc::new(DemoProvider::new()),
-                    "demo".into(),
-                    "the open web · demo".into(),
-                    true,
-                )
-            } else if let Some(a) = self.config.accounts.get(index - 1) {
-                match Mastodon::new(&a.instance, &a.token) {
-                    Ok(p) => (
-                        Arc::new(p),
-                        a.id.clone(),
-                        display_instance(&a.instance),
-                        false,
-                    ),
-                    Err(e) => {
-                        self.notice(e.to_string(), true);
-                        return;
-                    }
-                }
-            } else {
-                return;
-            };
+        let id = if index == 0 {
+            "demo".to_owned()
+        } else if let Some(account) = self.config.accounts.get(index - 1) {
+            account.id.clone()
+        } else {
+            return;
+        };
         let drafts = match config::load_drafts(self.root.as_deref(), &id) {
-            Ok(d) => d,
-            Err(e) => {
-                self.notice(format!("Cannot load account drafts: {e}"), true);
+            Ok(drafts) => drafts,
+            Err(error) => {
+                self.notice(format!("Cannot load account drafts: {error}"), true);
                 return;
             }
         };
-        if !demo && !self.persist_preferences(Some(&id)) {
-            return;
-        }
+        let demo = index == 0;
+        let (provider, instance): (Arc<dyn SocialProvider>, String) = if demo {
+            (Arc::new(DemoProvider::new()), "the open web · demo".into())
+        } else {
+            // Resolve the original selection by ID against current credentials while
+            // holding the same lock as session refresh. Construction does no I/O.
+            let result = config::update(self.root.as_deref(), |latest| {
+                let account = latest.accounts.iter().find(|account| account.id == id)
+                    .ok_or_else(|| anyhow::anyhow!("That account was removed from the saved configuration; reopen the account switcher"))?;
+                let provider = saved_provider(account, self.root.clone())?;
+                let instance = display_instance(&account.instance);
+                latest.active = Some(id.clone());
+                latest.theme = theme_key(self.view.theme).into();
+                latest.reduced_motion = self.view.reduced_motion;
+                latest.compact = self.view.compact;
+                Ok((provider, instance, latest.clone()))
+            });
+            match result {
+                Ok((provider, instance, latest)) => {
+                    self.config = latest;
+                    (provider, instance)
+                }
+                Err(error) => {
+                    self.notice(format!("Cannot switch accounts: {error}"), true);
+                    return;
+                }
+            }
+        };
         self.generation += 1;
         self.provider = provider;
         self.account_id = id.clone();
@@ -1824,6 +1923,12 @@ impl App {
         self.view.drafts = drafts;
         self.view.composer = Compose::default();
         self.view.poll_input.clear();
+        self.view.attachment_path.clear();
+        self.view.attachment_alt.clear();
+        self.view.compose_field = 0;
+        self.view.compose_cursor = 0;
+        self.view.file_browser = FileBrowser::default();
+        self.picker_request = self.picker_request.wrapping_add(1);
         self.view.revealed.clear();
         self.view.lists.clear();
         self.view.capabilities = self.provider.capabilities();
@@ -1834,6 +1939,7 @@ impl App {
         self.confirmation = None;
         self.list_add_author = None;
         self.media_requested = None;
+        self.local_media_requested = None;
         self.navigate(Feed::Home);
         let p = self.provider.clone();
         self.spawn(Job::Background, async move {
@@ -1911,6 +2017,16 @@ pub fn theme_key(theme: Theme) -> &'static str {
         Theme::Contrast => "contrast",
     }
 }
+fn saved_provider(
+    account: &SavedAccount,
+    root: Option<PathBuf>,
+) -> Result<Arc<dyn SocialProvider>> {
+    match account.provider.as_str() {
+        "mastodon" => Ok(Arc::new(Mastodon::new(&account.instance, &account.token)?)),
+        "bluesky" => Ok(Arc::new(Bluesky::from_saved(account, root)?)),
+        _ => bail!("Unknown account provider. This build supports Mastodon and Bluesky."),
+    }
+}
 fn account_labels(config: &Config, active: &str) -> Vec<AccountLabel> {
     let mut accounts = vec![AccountLabel {
         label: "Explore the demo".into(),
@@ -1919,7 +2035,15 @@ fn account_labels(config: &Config, active: &str) -> Vec<AccountLabel> {
     }];
     accounts.extend(config.accounts.iter().map(|a| AccountLabel {
         label: a.label.clone(),
-        network: display_instance(&a.instance),
+        network: format!(
+            "{} · {}",
+            match a.provider.as_str() {
+                "bluesky" => "Bluesky",
+                "mastodon" => "Mastodon",
+                _ => "Other network",
+            },
+            display_instance(&a.instance)
+        ),
         active: active == a.id,
     }));
     accounts
@@ -1937,18 +2061,57 @@ pub fn validate_compose(c: &Compose, caps: &Capabilities) -> Result<()> {
     if c.text.trim().is_empty() && c.attachments.is_empty() {
         bail!("Write something or attach media before publishing");
     }
-    let count = c.text.chars().count() + c.spoiler_text.chars().count();
+    if c.edit_id.is_some() && !caps.editing {
+        bail!("This network does not support editing posts");
+    }
+    if !caps.post_visibility && c.visibility != Visibility::Public {
+        bail!("This network supports public posts only");
+    }
+    if !caps.content_warnings && (!c.spoiler_text.is_empty() || c.sensitive) {
+        bail!("This network does not support content warnings in the composer");
+    }
+    if caps
+        .max_text_bytes
+        .is_some_and(|limit| c.text.len() > limit)
+    {
+        bail!(
+            "Post is too large: {} / {} UTF-8 bytes",
+            c.text.len(),
+            caps.max_text_bytes.unwrap_or_default()
+        );
+    }
+    let count = caps.compose_length(c);
     if count > caps.max_characters {
         bail!(
-            "Post is too long: {count}/{} characters (including content warning)",
-            caps.max_characters
+            "Post is too long: {count}/{} {}{}",
+            caps.max_characters,
+            if caps.grapheme_counting {
+                "graphemes"
+            } else {
+                "characters"
+            },
+            if caps.content_warnings {
+                " (including content warning)"
+            } else {
+                ""
+            }
         );
     }
     if !c.attachments.is_empty() && !caps.media {
         bail!("This network does not support attachments");
     }
-    if c.attachments.len() > 4 {
-        bail!("A post can contain at most four attachments");
+    if c.attachments.len() > caps.max_media_attachments {
+        bail!(
+            "A post can contain at most {} attachments",
+            caps.max_media_attachments
+        );
+    }
+    if caps.image_only_media
+        && c.attachments
+            .iter()
+            .any(|a| file_picker::media_kind(Path::new(&a.path)) != Some(FileKind::Image))
+    {
+        bail!("This network accepts image attachments only");
     }
     if !c.poll_options.is_empty() {
         if !caps.polls {
@@ -2036,5 +2199,66 @@ mod tests {
         app.command("drafts");
         app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(app.view.composer.text, "A draft with Unicode 🌌");
+    }
+    #[tokio::test]
+    async fn account_switch_ignores_previous_generation_results_and_clears_pending_media() {
+        let root = tempfile::tempdir().unwrap();
+        let mut app = App::new(Config::default(), Some(root.path().join("private")), true).unwrap();
+        app.view.attachment_path = "old-account.png".into();
+        app.view.attachment_alt = "Private pending description".into();
+        app.local_media_requested = Some("old-account.png".into());
+        app.media_requested = Some(Post::default());
+        let old_generation = app.generation;
+        app.switch_account(0);
+        assert!(app.local_media_requested.is_none());
+        assert!(app.media_requested.is_none());
+        assert!(app.view.attachment_path.is_empty());
+        assert!(app.view.attachment_alt.is_empty());
+        assert!(app.generation > old_generation);
+        assert!(
+            app.tx
+                .send(Message {
+                    generation: old_generation,
+                    job: Job::Background,
+                    result: Ok(Data::Identity(
+                        Account {
+                            id: "previous-account".into(),
+                            ..Account::default()
+                        },
+                        Capabilities {
+                            name: "Wrong network",
+                            ..Capabilities::default()
+                        },
+                    )),
+                })
+                .is_ok()
+        );
+        assert!(
+            app.tx
+                .send(Message {
+                    generation: old_generation,
+                    job: Job::Feed(app.request),
+                    result: Ok(Data::Feed(
+                        Box::new(FeedData {
+                            posts: vec![Post {
+                                id: "private-old-post".into(),
+                                ..Post::default()
+                            }],
+                            ..FeedData::default()
+                        }),
+                        false,
+                    )),
+                })
+                .is_ok()
+        );
+        app.tick();
+        assert_ne!(app.view.me.id, "previous-account");
+        assert_ne!(app.view.capabilities.name, "Wrong network");
+        assert!(
+            !app.view
+                .posts
+                .iter()
+                .any(|post| post.id == "private-old-post")
+        );
     }
 }
