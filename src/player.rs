@@ -6,8 +6,9 @@ use std::{
     process::{Child, Command, ExitStatus, Stdio},
 };
 
-use anyhow::{Context, Result, bail};
-use url::Url;
+use anyhow::{Context, Result, anyhow, bail};
+
+use crate::media_source::public_media_url;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PlaybackMode {
@@ -48,17 +49,9 @@ pub struct Source(OsString);
 
 impl Source {
     pub fn remote(value: &str) -> Result<Self> {
-        if value.chars().any(char::is_control) {
-            bail!("Invalid media URL");
-        }
-        let url = Url::parse(value).context("Invalid media URL")?;
-        if !matches!(url.scheme(), "http" | "https")
-            || url.host_str().is_none()
-            || !url.username().is_empty()
-            || url.password().is_some()
-        {
-            bail!("Playback requires an HTTP or HTTPS URL without embedded credentials");
-        }
+        let url = public_media_url(value).map_err(|_| {
+            anyhow!("Playback requires a public HTTP or HTTPS URL without embedded credentials")
+        })?;
         Ok(Self(OsString::from(url.as_str())))
     }
 

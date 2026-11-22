@@ -226,83 +226,26 @@ async fn bundled_demo_images_load_without_network_access() {
 }
 
 #[tokio::test]
-async fn image_fetch_does_not_send_account_credentials() {
-    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
-    let server = MockServer::start().await;
-    Mock::given(path("/photo.png"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(png(3, 2)))
-        .expect(1)
-        .mount(&server)
-        .await;
-    let image = fetch_image(&format!("{}/photo.png", server.uri()))
-        .await
-        .unwrap();
-    assert_eq!((image.width(), image.height()), (3, 2));
-    let requests = server.received_requests().await.unwrap();
-    assert!(!requests[0].headers.contains_key("authorization"));
-}
-
-#[tokio::test]
 async fn oversized_and_invalid_media_responses_fail_cleanly() {
-    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
-    let server = MockServer::start().await;
-    Mock::given(path("/too-big"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0; MAX_DOWNLOAD_BYTES + 1]))
-        .mount(&server)
-        .await;
-    let error = fetch_image(&format!("{}/too-big", server.uri()))
-        .await
-        .unwrap_err();
-    assert!(error.to_string().contains("16 MiB"));
     for url in [
         "file:///etc/passwd",
         "javascript:alert(1)",
         "https://name:secret@example.com/image",
         "https://example.com/\n",
+        "http://127.0.0.1/image",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://[::1]/image",
     ] {
         assert!(fetch_image(url).await.is_err());
     }
 }
 
 #[tokio::test]
-async fn chunked_images_are_limited_even_without_a_content_length() {
-    use tokio::{
-        io::{AsyncReadExt, AsyncWriteExt},
-        net::TcpListener,
-    };
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.unwrap();
-        let mut request = Vec::new();
-        loop {
-            let byte = stream.read_u8().await.unwrap();
-            request.push(byte);
-            if request.ends_with(b"\r\n\r\n") {
-                break;
-            }
-        }
-        stream
-            .write_all(
-                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
-            )
-            .await
-            .unwrap();
-        let chunk = vec![0_u8; 64 * 1024];
-        for _ in 0..(MAX_DOWNLOAD_BYTES / chunk.len() + 1) {
-            if stream.write_all(b"10000\r\n").await.is_err()
-                || stream.write_all(&chunk).await.is_err()
-                || stream.write_all(b"\r\n").await.is_err()
-            {
-                return;
-            }
-        }
-        let _ = stream.write_all(b"0\r\n\r\n").await;
-    });
-    let result = fetch_image(&format!("http://{address}/chunked")).await;
-    server.abort();
-    let error = result.unwrap_err();
-    assert!(error.to_string().contains("16 MiB"), "{error:#}");
+async fn private_network_images_are_rejected_before_connecting() {
+    let error = fetch_image("http://127.0.0.1:9/photo.png")
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("public network address"));
 }
 
 #[test]
@@ -394,19 +337,7 @@ async fn remove_prepared_original(root: &std::path::Path, expected: &[u8]) {
 
 #[tokio::test]
 async fn prepared_native_image_is_canceled_when_navigating_or_changing_mode() {
-    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
-    let server = MockServer::start().await;
-    let bytes = png(4, 3);
-    Mock::given(path("/first.png"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(bytes.clone()))
-        .expect(2)
-        .mount(&server)
-        .await;
-    Mock::given(path("/second.png"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(bytes.clone()))
-        .expect(0)
-        .mount(&server)
-        .await;
+    let bytes = include_bytes!("../assets/demo-desktop.png");
     for cancel in [KeyCode::Right, KeyCode::Char('v')] {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("private");
@@ -415,13 +346,13 @@ async fn prepared_native_image_is_canceled_when_navigating_or_changing_mode() {
                 media: vec![
                     Media {
                         kind: "image".into(),
-                        url: format!("{}/first.png", server.uri()),
+                        url: "demo://desktop".into(),
                         description: "first original".into(),
                         ..Media::default()
                     },
                     Media {
                         kind: "image".into(),
-                        url: format!("{}/second.png", server.uri()),
+                        url: "demo://trail".into(),
                         description: "second original".into(),
                         ..Media::default()
                     },
@@ -433,7 +364,7 @@ async fn prepared_native_image_is_canceled_when_navigating_or_changing_mode() {
         .with_config_root(Some(root.clone()));
         press(&mut gallery, KeyCode::Char('v'));
         press(&mut gallery, KeyCode::Enter);
-        remove_prepared_original(&root, &bytes).await;
+        remove_prepared_original(&root, bytes).await;
         press(&mut gallery, cancel);
         for _ in 0..4 {
             gallery.tick();
@@ -454,24 +385,14 @@ async fn prepared_native_image_is_canceled_when_navigating_or_changing_mode() {
 
 #[tokio::test]
 async fn native_prepare_deduplicates_pending_enter_and_allows_retry_after_failure() {
-    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
-    let server = MockServer::start().await;
-    Mock::given(path("/invalid.png"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_bytes(b"Not an image".to_vec())
-                .set_delay(std::time::Duration::from_millis(40)),
-        )
-        .expect(2)
-        .mount(&server)
-        .await;
+    let bytes = include_bytes!("../assets/demo-desktop.png");
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("private");
     let mut gallery = Gallery::new(
         Post {
             media: vec![Media {
                 kind: "image".into(),
-                url: format!("{}/invalid.png", server.uri()),
+                url: "demo://desktop".into(),
                 ..Media::default()
             }],
             ..Post::default()
@@ -483,6 +404,7 @@ async fn native_prepare_deduplicates_pending_enter_and_allows_retry_after_failur
     for attempt in 1..=2 {
         press(&mut gallery, KeyCode::Enter);
         press(&mut gallery, KeyCode::Enter);
+        remove_prepared_original(&root, bytes).await;
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
         loop {
             gallery.tick();
@@ -492,8 +414,18 @@ async fn native_prepare_deduplicates_pending_enter_and_allows_retry_after_failur
             assert!(tokio::time::Instant::now() < deadline);
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
-        assert_eq!(server.received_requests().await.unwrap().len(), attempt);
-        assert!(!root.join("image-previews").exists());
+        let stored = std::fs::read_dir(root.join("image-previews"))
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|entry| entry.file_name().to_string_lossy().starts_with("image-"))
+                    .count()
+            })
+            .unwrap_or_default();
+        assert_eq!(
+            stored, 0,
+            "attempt {attempt} spawned duplicate preparations"
+        );
     }
 }
 

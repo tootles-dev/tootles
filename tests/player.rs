@@ -16,6 +16,9 @@ fn playback_modes_cycle_and_remote_sources_cannot_select_files_or_options() {
         "--script=evil.lua",
         "https://name:secret@example.com/media",
         "https://example.com/media\n--script=evil.lua",
+        "http://127.0.0.1/media",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://[::1]/media",
     ] {
         assert!(Source::remote(bad).is_err(), "accepted {bad}");
     }

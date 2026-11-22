@@ -5,7 +5,16 @@ use serde::de::DeserializeOwned;
 use serde_json::error::Category;
 use serde_path_to_error::{Path, Segment};
 
+const MAX_JSON_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+
 pub(crate) async fn decode_json<T: DeserializeOwned>(response: Response) -> Result<T> {
+    decode_json_with_limit(response, MAX_JSON_RESPONSE_BYTES).await
+}
+
+async fn decode_json_with_limit<T: DeserializeOwned>(
+    mut response: Response,
+    response_limit: usize,
+) -> Result<T> {
     let status = response.status().as_u16();
     let html = response
         .headers()
@@ -23,13 +32,27 @@ pub(crate) async fn decode_json<T: DeserializeOwned>(response: Response) -> Resu
                 "text/html" | "application/xhtml+xml"
             )
         });
-    let bytes = response.bytes().await.map_err(|error| {
+    if response
+        .content_length()
+        .is_some_and(|size| size > response_limit as u64)
+    {
+        bail!("The server response exceeds the client size limit (HTTP {status})");
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|error| {
         if error.is_timeout() {
             anyhow!("Timed out while reading the server response (HTTP {status}); try again")
         } else {
             anyhow!("Could not read the server response (HTTP {status}); the connection may have been interrupted or its compression is invalid")
         }
-    })?;
+    })? {
+        // reqwest yields transparently decompressed bytes here, so this limit
+        // also contains compressed responses whose decoded body expands greatly.
+        if bytes.len().saturating_add(chunk.len()) > response_limit {
+            bail!("The server response exceeds the client size limit (HTTP {status})");
+        }
+        bytes.extend_from_slice(&chunk);
+    }
     // Some reverse proxies return a successful HTML challenge or sign-in page.
     // Never print that page: it could contain a token or terminal controls.
     if html || bytes.iter().copied().find(|b| !b.is_ascii_whitespace()) == Some(b'<') {
@@ -117,8 +140,77 @@ mod tests {
             .send()
             .await
             .unwrap();
-        let json: Value = decode_json(response).await.unwrap();
+        let json: Value = decode_json_with_limit(response, br#"{"ok":true}"#.len())
+            .await
+            .unwrap();
         assert_eq!(json, serde_json::json!({"ok":true}));
+    }
+
+    #[tokio::test]
+    async fn declared_oversized_json_response_is_rejected() {
+        const TEST_LIMIT: usize = 64;
+        let server = MockServer::start().await;
+        Mock::given(wiremock::matchers::path("/"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_raw(vec![b' '; TEST_LIMIT + 1], "application/json"),
+            )
+            .mount(&server)
+            .await;
+        let response = reqwest::get(server.uri()).await.unwrap();
+        assert_eq!(response.content_length(), Some((TEST_LIMIT + 1) as u64));
+
+        let error = decode_json_with_limit::<Value>(response, TEST_LIMIT)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("exceeds the client size limit"), "{error}");
+        assert!(error.contains("HTTP 200"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn chunked_compressed_json_is_limited_after_decoding() {
+        const TEST_LIMIT: usize = 64;
+        // Deterministic gzip of a 107-byte JSON document. The 34-byte encoded
+        // body is below the test limit, while the decoded body is above it.
+        let gzip = [
+            31, 139, 8, 0, 0, 0, 0, 0, 2, 255, 171, 86, 42, 73, 173, 40, 81, 178, 82, 74, 164, 49,
+            80, 170, 5, 0, 246, 184, 148, 192, 107, 0, 0, 0,
+        ];
+        assert!(gzip.len() < TEST_LIMIT);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(stream.read_u8().await.unwrap());
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Encoding: gzip\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n22\r\n",
+                )
+                .await
+                .unwrap();
+            stream.write_all(&gzip).await.unwrap();
+            stream.write_all(b"\r\n0\r\n\r\n").await.unwrap();
+        });
+        let response = reqwest::Client::new()
+            .get(format!("http://{address}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.content_length(), None);
+
+        let error = decode_json_with_limit::<Value>(response, TEST_LIMIT)
+            .await
+            .unwrap_err()
+            .to_string();
+        server.await.unwrap();
+
+        assert!(error.contains("exceeds the client size limit"), "{error}");
+        assert!(error.contains("HTTP 200"), "{error}");
     }
 
     #[tokio::test]
