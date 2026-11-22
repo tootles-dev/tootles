@@ -1,6 +1,6 @@
 [package]
 name = "tootles"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.90"
 description = "A calm, keyboard-first social cockpit for Mastodon and beyond"
@@ -12,8 +12,7 @@ async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.6", features = ["derive", "env"] }
 clap_complete = "4.6"
-crossterm = { version = "0.29", features = ["event-stream"] }
-futures-util = "0.3"
+crossterm = "0.29"
 html-escape = "0.2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 ratatui = "0.30"

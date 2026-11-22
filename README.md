@@ -32,15 +32,15 @@ Without a connected account, Tootles clearly labels and opens its offline demo. 
 
 ## What is included
 
-- **Timelines:** home, local, federated, favourites, bookmarks, lists, hashtags, and account profiles. Pagination loads older entries as you reach the bottom. Refresh preserves your selected post when possible.
+- **Timelines:** home, local, federated, favorites, bookmarks, lists, hashtags, and account profiles. Pagination loads older entries as you reach the bottom. Refresh preserves your selected post when possible.
 - **Conversations:** parent and child posts, replies, content warnings, visibility, boost attribution, and edited-post markers.
-- **Notifications:** mentions, follows, favourites, boosts, and other server notification types, with links to their author or conversation.
+- **Notifications:** mentions, follows, favorites, boosts, and other server notification types, with links to their author or conversation.
 - **Search:** posts, people, and hashtags. Use the command palette's “Show people from search” to browse account results.
 - **Compose:** multiline Unicode editing, replies, content warnings, four visibility levels, language, media with alt text, and single- or multiple-choice polls. Edit and delete your own posts. Drafts autosave locally and are separated by account.
-- **Interactions:** favourite, boost, bookmark, follow/unfollow, mute/unmute, block/unblock, vote, open in browser, create lists, and add an author to a list.
+- **Interactions:** favorite, boost, bookmark, follow/unfollow, mute/unmute, block/unblock, vote, open in browser, create lists, and add an author to a list.
 - **Accounts:** browser OAuth, verified token login, account switching, local logout, and separate credentials/drafts.
 - **Interface:** responsive navigation/timeline/inspector panes, clickable controls, mouse scrolling, command palette, contextual shortcuts, reduced motion, compact mode, and four themes: **Tokyo Night**, Midnight, Paper, and High Contrast.
-- **Media gallery:** on-demand terminal image previews, attachment navigation, full alt text, and external video/audio playback.
+- **Media gallery:** inline image previews for posts and local attachments, full alt text, and optional mpv video/audio playback in a window or the terminal.
 - **Extensibility:** an asynchronous `SocialProvider` trait keeps Mastodon API details outside the UI. A second, stateful demo provider exercises the boundary. Other live networks can be added as Rust adapters.
 
 Network requests run in background tasks. Account and request generations keep stale responses from replacing the current view. Read requests retry transient connection errors; writes are not automatically replayed. Publishing carries an idempotency key to make an intentional retry safe. Server hide/warn filters and sensitive content are respected by the adapter and interface.
@@ -55,11 +55,11 @@ Press **?** at any time outside an input for help, or **Ctrl+K** / **:** for the
 | `PgDown` / `PgUp`, `Space` | Move through the timeline |
 | `g` / `G`, `Home` / `End` | First / last loaded post |
 | `1` / `2` / `3` | Home / local / federated |
-| `4` / `5` / `6` | Notifications / bookmarks / favourites |
+| `4` / `5` / `6` | Notifications / bookmarks / favorites |
 | `Enter` | Open conversation |
 | `Backspace` / `←` | Previous view |
 | `n` / `r` | New post / reply |
-| `f` / `b` / `s` | Favourite / boost / bookmark |
+| `f` / `b` / `s` | Favorite / boost / bookmark |
 | `p` / `F` | Author profile / follow or unfollow |
 | `/` / `#` | Search / browse hashtag |
 | `x` | Reveal or hide content warning / sensitive media |
@@ -83,10 +83,15 @@ Use `Tab` / `Shift+Tab` to cycle body, content warning, attachment path, alt tex
 | `Ctrl+S` | Save a local draft |
 | `Esc` | Save and close the draft |
 | `Alt+V` or `F2` | Public → unlisted → followers → mentioned only |
-| `Alt+A` or `F3` | Add the file and alt text entered in the attachment fields |
+| `F3` or `Alt+B` | Browse for an image, video, or audio file |
+| `Alt+A` | Add the selected file and its description to the post |
 | `Alt+S` | Toggle sensitive media |
 | `Alt+P` | Single / multiple choice poll |
 | `Alt+D` | Cycle poll duration |
+
+Click **Browse files** or press `F3` to choose media without copying a path. The browser opens your last folder, Pictures, or home. Use arrows / `j` / `k` to select, `Enter` to open a folder or choose a file, and `Backspace` to go up. `Home` / `End` and `PageUp` / `PageDown` move through longer folders. Click a row to select it, then **Open folder** or **Choose file**; the mouse wheel scrolls the list.
+
+Press `f` or `Tab` to cycle all media, images, video, and audio. `.` shows hidden files; `Ctrl+L` edits the location, including `~/Pictures` and relative paths. `p` or **Preview** opens the selected file locally. `Esc` returns to your composer without losing text or the pending description. Choosing a file focuses **Alt text**: add a description, then press `Alt+A` or click **Add file**. You can still paste or type a path directly, and **Preview** works for the pending or most recently added attachment. Files remain local until you publish.
 
 Separate poll options with semicolons, for example `Tea; Coffee; Water`. A post may contain media **or** a poll. Attachments upload only when publishing. Server limits and processing errors appear in the interface; the draft remains available if publishing fails. Mentioned-only posts are ordinary Mastodon direct messages, **not end-to-end encrypted**.
 
@@ -94,7 +99,9 @@ Separate poll options with semicolons, for example `Tea; Coffee; Water`. A post 
 
 Press `m` on a media post to open its gallery. Use `--image-protocol halfblocks` to skip terminal capability queries over unusual SSH or multiplexer setups. Images are downloaded only then, without attaching your account token to third-party media hosts. The gallery chooses the terminal's supported **Kitty**, **Sixel**, or **iTerm2** graphics protocol, with a Unicode half-block fallback. Images are bounded in download size and decoded dimensions; original URLs and alt text remain available if a preview cannot load. GIF previews show a static frame.
 
-Use arrows or `h`/`l` to switch attachments and `Enter`/`o` to open the original through your desktop's URL handler (`xdg-open` under Linux). Video and audio playback use that external handler; Tootles does not decode moving video in the terminal. Sensitive attachments stay hidden until you reveal the post with `x`. The gallery uses a small memory cache; it does not save downloaded media to disk.
+Use arrows or `h`/`l` to switch attachments. For video or audio, `v` cycles **Window → Terminal → Browser** playback; `Enter` plays the selected item. Window and Terminal modes use an optional, separately installed **mpv** executable. Terminal mode uses Kitty graphics when detected, with a true-color text fallback; `q` exits mpv and returns to Tootles. `o` opens a remote original through your desktop URL handler (`xdg-open` on Linux). Sensitive attachments stay hidden until you reveal the post with `x`. The gallery uses a small memory cache and does not save downloaded images to disk. See [the media guide](docs/media.md) for controls and supported preview formats.
+
+For login or installation problems, see [troubleshooting](docs/troubleshooting.md).
 
 ## Terminal setup and configuration
 
@@ -134,6 +141,7 @@ cargo build --release --locked
 cargo run -- --snapshot docs/preview.svg --width 144 --height 44
 cargo run --example render_previews -- docs
 python3 scripts/smoke-terminal.py
+python3 scripts/smoke-video.py    # optional; requires mpv and ffmpeg
 ```
 
 Tests use a local mock server and offline providers. They do not require an account or publish anything. Terminal rendering tests exercise all themes, modals, compact layouts, content-warning privacy, and tiny window sizes. Live OAuth and actual graphics protocol/compositor behavior require an authenticated server and a supporting terminal to verify end-to-end.

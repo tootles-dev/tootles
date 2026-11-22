@@ -1,5 +1,6 @@
 //! Responsive, terminal-native presentation. Every pointer target carries the
 //! same semantic action used by the keyboard; no account state lives here.
+use crate::file_picker::FileKind;
 use crate::{model::*, view::*};
 use ratatui::{
     Frame,
@@ -205,6 +206,14 @@ fn row(area: Rect, y: u16) -> Rect {
         u16::from(y < area.height),
     )
 }
+fn portion(area: Rect, x: u16, y: u16, width: u16, height: u16) -> Rect {
+    Rect::new(
+        area.x.saturating_add(x.min(area.width)),
+        area.y.saturating_add(y.min(area.height)),
+        width.min(area.width.saturating_sub(x)),
+        height.min(area.height.saturating_sub(y)),
+    )
+}
 fn inset(area: Rect, x: u16, y: u16) -> Rect {
     Rect::new(
         area.x.saturating_add(x.min(area.width)),
@@ -378,7 +387,7 @@ fn sidebar(frame: &mut Frame, view: &mut View, area: Rect, p: Palette) {
         ("3", "Federated", Feed::Federated),
         ("4", "Notifications", Feed::Notifications),
         ("5", "Bookmarks", Feed::Bookmarks),
-        ("6", "Favourites", Feed::Favourites),
+        ("6", "Favorites", Feed::Favourites),
     ];
     for (index, (key, label, feed)) in nav.into_iter().enumerate() {
         let r = row(inside, 2 + index as u16 * 2);
@@ -875,7 +884,7 @@ fn notification_card(
     let inner = inset(area, 2, 1);
     let verb = match note.kind.as_str() {
         "follow" => "followed you",
-        "favourite" => "favourited your post",
+        "favourite" => "favorited your post",
         "reblog" => "boosted your post",
         "mention" => "mentioned you",
         "poll" => "poll has ended",
@@ -968,9 +977,21 @@ fn inspector(frame: &mut Frame, view: &mut View, area: Rect, p: Palette) {
         frame,
         row(area, 5),
         Line::from(vec![
-            Span::styled(format!("{}", account.followers_count), p.bold()),
+            Span::styled(
+                account
+                    .followers_count
+                    .map(|count| count.to_string())
+                    .unwrap_or_else(|| "—".into()),
+                p.bold(),
+            ),
             Span::styled(" followers   ", p.muted()),
-            Span::styled(format!("{}", account.following_count), p.bold()),
+            Span::styled(
+                account
+                    .following_count
+                    .map(|count| count.to_string())
+                    .unwrap_or_else(|| "—".into()),
+                p.bold(),
+            ),
             Span::styled(" following", p.muted()),
         ]),
         p.text(),
@@ -1185,7 +1206,7 @@ fn inspector(frame: &mut Frame, view: &mut View, area: Rect, p: Palette) {
 fn footer(frame: &mut Frame, view: &mut View, area: Rect, p: Palette) {
     frame.render_widget(Block::default().style(Style::default().bg(p.panel)), area);
     let hints = if area.width >= 110 {
-        "  j/k move   Enter thread   r reply   f favourite   b boost   s save   n compose   / search   Ctrl+K commands   ? help"
+        "  j/k move   Enter thread   r reply   f favorite   b boost   s save   n compose   / search   Ctrl+K commands   ? help"
     } else if area.width >= 65 {
         "  j/k move  Enter thread  n compose  / search  Ctrl+K commands  ? help"
     } else {
@@ -1195,7 +1216,7 @@ fn footer(frame: &mut Frame, view: &mut View, area: Rect, p: Palette) {
     for (label, id) in [
         ("Enter thread", "thread"),
         ("r reply", "reply"),
-        ("f favourite", "favourite"),
+        ("f favorite", "favourite"),
         ("b boost", "boost"),
         ("s save", "bookmark"),
         ("n compose", "compose"),
@@ -1316,6 +1337,7 @@ fn modal(frame: &mut Frame, view: &mut View, p: Palette) {
         Modal::Help => help_modal(frame, view, p),
         Modal::Palette { query, selected } => palette_modal(frame, view, &query, selected, p),
         Modal::Compose => compose_modal(frame, view, p),
+        Modal::FileBrowser => file_browser_modal(frame, view, p),
         Modal::Input {
             title,
             value,
@@ -1535,13 +1557,13 @@ fn help_modal(frame: &mut Frame, view: &mut View, p: Palette) {
         ("j / k  or  ↑ / ↓", "Previous / next post"),
         ("PageUp / PageDown", "Move a page · Home / End jump"),
         ("1 · 2 · 3", "Home · Local · Federated"),
-        ("4 · 5 · 6", "Notifications · Bookmarks · Favourites"),
+        ("4 · 5 · 6", "Notifications · Bookmarks · Favorites"),
         ("Enter", "Open conversation"),
         ("/   ·   #", "Search everything · browse hashtag"),
         ("", ""),
         ("JOIN THE CONVERSATION", ""),
         ("n   ·   r   ·   e", "New post · reply · edit your post"),
-        ("f   ·   b   ·   s", "Favourite · boost · bookmark"),
+        ("f   ·   b   ·   s", "Favorite · boost · bookmark"),
         ("p   ·   F", "View author · follow / unfollow"),
         ("x   ·   v", "Reveal content warning · vote"),
         ("o   ·   m", "Open post · media gallery"),
@@ -1589,6 +1611,327 @@ fn help_modal(frame: &mut Frame, view: &mut View, p: Palette) {
         "Click to select · scroll to move · Esc to return",
         p.muted(),
     );
+}
+
+fn file_browser_modal(frame: &mut Frame, view: &mut View, p: Palette) {
+    let area = modal_frame(frame, view, 96, 34, "Find an attachment", p);
+    let compact = area.width < 48 || area.height < 22;
+    let location = view.file_browser.location.clone();
+    if compact {
+        if view.file_browser.editing_location {
+            single_input(frame, row(area, 0), &location, view.file_browser.cursor, p);
+        } else {
+            text(frame, row(area, 0), safe_file_text(&location), p.muted());
+        }
+        command(view, row(area, 0), "browse_location");
+        chip(
+            frame,
+            view,
+            portion(area, 0, 2, 10, 1),
+            "↑ Parent",
+            "browse_up",
+            false,
+            p,
+        );
+        chip(
+            frame,
+            view,
+            portion(area, 12, 2, area.width.saturating_sub(12), 1),
+            view.file_browser.filter.label(),
+            "browse_filter",
+            false,
+            p,
+        );
+    } else {
+        text(
+            frame,
+            row(area, 0),
+            "Find a moment worth sharing. Choose a file, then add a description.",
+            p.muted(),
+        );
+        let location_area = portion(area, 0, 2, area.width.saturating_sub(8), 3);
+        let block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .title(Span::styled(" Location · Ctrl+L to edit ", p.text()))
+            .border_style(if view.file_browser.editing_location {
+                p.accent()
+            } else {
+                Style::default().fg(p.line)
+            });
+        let inner = block.inner(location_area);
+        frame.render_widget(block, location_area);
+        if view.file_browser.editing_location {
+            single_input(frame, inner, &location, view.file_browser.cursor, p);
+        } else {
+            text(frame, inner, safe_file_text(&location), p.text());
+        }
+        command(view, location_area, "browse_location");
+        chip(
+            frame,
+            view,
+            portion(area, area.width.saturating_sub(6), 3, 6, 1),
+            "Go →",
+            "browse_go",
+            false,
+            p,
+        );
+        for (x, width, label, id) in [
+            (0, 11, "↑ Parent", "browse_up"),
+            (13, 13, "~ Pictures", "browse_home"),
+        ] {
+            chip(
+                frame,
+                view,
+                portion(area, x, 6, width, 1),
+                label,
+                id,
+                false,
+                p,
+            );
+        }
+        let filter = format!("f  {}", view.file_browser.filter.label());
+        chip(
+            frame,
+            view,
+            portion(area, 28, 6, 19, 1),
+            &filter,
+            "browse_filter",
+            false,
+            p,
+        );
+        let hidden = if view.file_browser.show_hidden {
+            ". Hidden: shown"
+        } else {
+            ". Hidden: off"
+        };
+        chip(
+            frame,
+            view,
+            portion(area, 49, 6, 18, 1),
+            hidden,
+            "browse_hidden",
+            false,
+            p,
+        );
+        text(
+            frame,
+            portion(area, 1, 8, area.width.saturating_sub(24), 1),
+            "NAME",
+            p.muted(),
+        );
+        text(
+            frame,
+            portion(area, area.width.saturating_sub(20), 8, 8, 1),
+            "TYPE",
+            p.muted(),
+        );
+        text(
+            frame,
+            portion(area, area.width.saturating_sub(10), 8, 10, 1),
+            "SIZE",
+            p.muted(),
+        );
+    }
+    let start = if compact { 4 } else { 10 };
+    let content = portion(
+        area,
+        0,
+        start,
+        area.width,
+        area.height.saturating_sub(start + 6),
+    );
+    let picker = &mut view.file_browser;
+    picker.selected = picker.selected.min(picker.entries.len().saturating_sub(1));
+    picker.offset = picker.offset.min(picker.selected);
+    if content.height > 0 && picker.selected >= picker.offset + content.height as usize {
+        picker.offset = picker.selected + 1 - content.height as usize;
+    }
+    let loading = picker.loading;
+    let error = picker.error.clone();
+    if loading {
+        text(frame, row(content, 1), "◌ Reading this folder…", p.accent());
+    } else if let Some(error) = &error
+        && picker.entries.is_empty()
+    {
+        frame.render_widget(
+            Paragraph::new(safe_file_text(error))
+                .style(Style::default().fg(p.coral))
+                .wrap(Wrap { trim: false }),
+            content,
+        );
+    } else if picker.entries.is_empty() {
+        let lines = vec![
+            Line::from(Span::styled("No matching media in this folder.", p.text())),
+            Line::default(),
+            Line::from(Span::styled(
+                "Open another folder or change the filter with f.",
+                p.muted(),
+            )),
+        ];
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), content);
+    } else {
+        let entries: Vec<_> = picker
+            .entries
+            .iter()
+            .enumerate()
+            .skip(picker.offset)
+            .take(content.height as usize)
+            .map(|(index, entry)| (index, entry.clone()))
+            .collect();
+        let offset = picker.offset;
+        let selected = picker.selected;
+        for (index, entry) in entries {
+            let r = row(content, (index - offset) as u16);
+            let chosen = index == selected;
+            frame.render_widget(
+                Block::default().style(Style::default().bg(if chosen {
+                    p.selected
+                } else {
+                    p.panel
+                })),
+                r,
+            );
+            let marker = match entry.kind {
+                FileKind::Directory => "▸",
+                FileKind::Image => "◇",
+                FileKind::Video => "▶",
+                FileKind::Audio => "♪",
+            };
+            let color = if entry.kind == FileKind::Directory {
+                p.accent
+            } else {
+                p.fg
+            };
+            let name_width = if compact {
+                r.width.saturating_sub(3)
+            } else {
+                r.width.saturating_sub(24)
+            };
+            text(
+                frame,
+                portion(r, 1, 0, name_width, 1),
+                ellipsis(&format!("{marker} {}", entry.name), name_width as usize),
+                Style::default().fg(color).add_modifier(if chosen {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
+            );
+            if !compact {
+                text(
+                    frame,
+                    portion(r, r.width.saturating_sub(20), 0, 8, 1),
+                    entry.kind.label(),
+                    p.muted(),
+                );
+                let size = if entry.kind == FileKind::Directory {
+                    "—".into()
+                } else {
+                    file_size(entry.bytes)
+                };
+                text(
+                    frame,
+                    portion(r, r.width.saturating_sub(10), 0, 10, 1),
+                    size,
+                    p.muted(),
+                );
+            }
+            hit(view, r, Hit::FileSelect(index));
+        }
+    }
+    let picker = &view.file_browser;
+    let entry = picker.entries.get(picker.selected);
+    let label = if entry.is_some_and(|entry| entry.kind == FileKind::Directory) {
+        "Open folder →"
+    } else {
+        "Choose file"
+    };
+    let status = if let Some(error) = &picker.error {
+        safe_file_text(error)
+    } else if let Some(entry) = entry {
+        format!("{}  ·  {}", entry.name, entry.kind.label())
+    } else if picker.omitted > 0 {
+        format!(
+            "At least {} hidden, filtered, or unavailable entries",
+            picker.omitted
+        )
+    } else {
+        "Images, video, and audio · files stay local until you publish".into()
+    };
+    if area.height >= 6 {
+        text(
+            frame,
+            row(area, area.height - 5),
+            status,
+            if picker.error.is_some() {
+                Style::default().fg(p.coral)
+            } else {
+                p.muted()
+            },
+        );
+        let action_y = area.height - 3;
+        chip(
+            frame,
+            view,
+            portion(area, 0, action_y, 16, 1),
+            label,
+            "browse_open",
+            true,
+            p,
+        );
+        chip(
+            frame,
+            view,
+            portion(area, 18, action_y, 12, 1),
+            "p Preview",
+            "browse_preview",
+            false,
+            p,
+        );
+        chip(
+            frame,
+            view,
+            portion(area, 32, action_y, 12, 1),
+            "Cancel",
+            "cancel",
+            false,
+            p,
+        );
+    }
+    let hint = if compact {
+        "Enter choose · Backspace up · Esc back"
+    } else {
+        "↑/↓ select · Enter open/choose · Backspace up · p preview · Ctrl+L location · Esc back"
+    };
+    text(
+        frame,
+        row(area, area.height.saturating_sub(1)),
+        hint,
+        p.muted(),
+    );
+}
+fn safe_file_text(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') {
+                '�'
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+fn file_size(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 * 1024 {
+        format!("{:.1} GiB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    } else if bytes >= 1024 * 1024 {
+        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{:.1} KiB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} B")
+    }
 }
 fn palette_modal(frame: &mut Frame, view: &mut View, query: &str, selected: usize, p: Palette) {
     let area = modal_frame(frame, view, 74, 23, "A command away", p);
@@ -1942,11 +2285,40 @@ fn compose_modal(frame: &mut Frame, view: &mut View, p: Palette) {
         );
         let y = 2 + h;
         compose_controls(frame, view, area, y, p);
+        if y + 1 < area.height.saturating_sub(1) {
+            chip(
+                frame,
+                view,
+                portion(area, 0, y + 1, 16, 1),
+                "F3 Browse files",
+                "browse",
+                false,
+                p,
+            );
+            chip(
+                frame,
+                view,
+                portion(area, 18, y + 1, 12, 1),
+                "+ Add file",
+                "attach",
+                false,
+                p,
+            );
+            chip(
+                frame,
+                view,
+                portion(area, 32, y + 1, 11, 1),
+                "Preview",
+                "preview_attachment",
+                false,
+                p,
+            );
+        }
         if area.height > 0 {
             text(
                 frame,
                 row(area, area.height - 1),
-                "Tab field · F4 send · Esc keep",
+                "Tab field · F3 browse · F4 send · Esc keep",
                 p.muted(),
             );
         }
@@ -1984,10 +2356,10 @@ fn compose_modal(frame: &mut Frame, view: &mut View, p: Palette) {
         frame,
         view,
         Rect::new(area.x, area.y + y, half.saturating_sub(1), 3),
-        "Attachment path",
+        "File · browse or paste a path",
         &path,
         2,
-        "/path/to/image.png",
+        "F3 to browse images, video, or audio",
         p,
     );
     editor(
@@ -2002,37 +2374,33 @@ fn compose_modal(frame: &mut Frame, view: &mut View, p: Palette) {
     );
     y += 3;
     let attached = view.composer.attachments.len();
-    let attach_r = Rect::new(area.x, area.y + y, 17.min(area.width), 1);
-    chip(
-        frame,
-        view,
-        attach_r,
-        "+ Add attachment",
-        "attach",
-        false,
-        p,
-    );
-    if area.width > 19 {
-        text(
+    for (x, width, label, id) in [
+        (0, 16, "F3 Browse files", "browse"),
+        (18, 12, "+ Add file", "attach"),
+        (32, 11, "Preview", "preview_attachment"),
+    ] {
+        chip(
             frame,
-            Rect::new(area.x + 19, area.y + y, area.width - 19, 1),
-            format!(
-                "{attached} attached{}",
-                if attached > 0 {
-                    " · click to remove last"
-                } else {
-                    ""
-                }
-            ),
-            Style::default().fg(p.purple),
+            view,
+            portion(area, x, y, width, 1),
+            label,
+            id,
+            false,
+            p,
         );
-        if attached > 0 {
-            command(
-                view,
-                Rect::new(area.x + 19, area.y + y, area.width - 19, 1),
-                "remove_attachment",
-            );
-        }
+    }
+    let status = portion(area, 45, y, area.width.saturating_sub(45), 1);
+    text(
+        frame,
+        status,
+        format!(
+            "{attached} attached{}",
+            if attached > 0 { " · remove last" } else { "" }
+        ),
+        Style::default().fg(p.purple),
+    );
+    if attached > 0 {
+        command(view, status, "remove_attachment");
     }
     y += 2;
     let poll = view.poll_input.clone();
@@ -2100,7 +2468,7 @@ fn compose_modal(frame: &mut Frame, view: &mut View, p: Palette) {
     text(
         frame,
         row(area, area.height.saturating_sub(1)),
-        "Tab fields · Ctrl+Enter / F4 publish · Ctrl+S save · Esc keep",
+        "F3 browse · Alt+A attach · F4 publish · Ctrl+S save · Esc keep",
         p.muted(),
     );
 }

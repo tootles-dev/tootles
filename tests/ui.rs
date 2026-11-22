@@ -8,8 +8,8 @@ fn sample() -> View {
         acct: "alexa@example.social".into(),
         display_name: "Alexa Morgan".into(),
         note: "Making the web a little more human.".into(),
-        followers_count: 328,
-        following_count: 142,
+        followers_count: Some(328),
+        following_count: Some(142),
         ..Default::default()
     };
     let post = Post {
@@ -65,6 +65,16 @@ fn sample() -> View {
         post: Some(post),
         ..Default::default()
     });
+    view.file_browser.directory = "/home/example/Pictures".into();
+    view.file_browser.location = "/home/example/Pictures".into();
+    view.file_browser.entries = (0..30)
+        .map(|index| tootles::file_picker::Entry {
+            path: format!("/home/example/Pictures/holiday-{index}.png").into(),
+            name: format!("holiday-{index}.png"),
+            kind: tootles::file_picker::FileKind::Image,
+            bytes: 2048,
+        })
+        .collect();
     view
 }
 fn draw(view: &mut View, width: u16, height: u16) -> String {
@@ -187,6 +197,7 @@ fn every_modal_and_theme_renders_at_every_size_without_invalid_hitboxes() {
             purpose: "search".into(),
         },
         Modal::Compose,
+        Modal::FileBrowser,
         Modal::Confirm {
             title: "Delete?".into(),
             detail: "This cannot be undone.".into(),
@@ -235,6 +246,33 @@ fn every_modal_and_theme_renders_at_every_size_without_invalid_hitboxes() {
             }
         }
     }
+}
+
+#[test]
+fn browser_shows_file_details_and_scrolls_selected_entry_into_view() {
+    let mut view = sample();
+    view.modal = Modal::FileBrowser;
+    view.file_browser.selected = 25;
+    let screen = draw(&mut view, 150, 48);
+    assert!(screen.contains("Find an attachment"));
+    assert!(screen.contains("holiday-25.png"));
+    assert!(screen.contains("2.0 KiB"));
+    assert!(view.file_browser.offset > 0);
+    assert!(
+        view.hits
+            .iter()
+            .any(|hit| matches!(hit.hit, Hit::FileSelect(25)))
+    );
+    assert!(
+        view.hits
+            .iter()
+            .any(|hit| matches!(&hit.hit, Hit::Command(command) if command == "browse_preview"))
+    );
+    view.file_browser.error = Some("Permission denied reading this folder".into());
+    assert!(draw(&mut view, 95, 32).contains("Permission denied"));
+    view.file_browser.error = None;
+    view.file_browser.loading = true;
+    assert!(draw(&mut view, 95, 32).contains("Reading this folder"));
 }
 #[test]
 fn selection_scrolls_into_view_and_mouse_actions_target_their_post() {

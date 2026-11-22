@@ -28,7 +28,10 @@ app.rs ───────────── config.rs
 | `ui` | Responsive terminal layout, color themes, widget rendering, and animation |
 | `app` | Input handling, background requests, navigation, and state updates |
 | `editor` | Unicode-aware text editing |
-| `media` | Explicit attachment gallery, bounded public image downloads, and background image decoding |
+| `file_picker` | Bounded folder listings, media filters, exact paths, and safe display names |
+| `media` | Inline post/local previews, bounded image reads, background decoding, and playback selection |
+| `player` | Validated media sources and optional mpv process management |
+| `http` | JSON decoding with private diagnostics and HTTP body errors |
 | `config` | Atomic private file persistence and redacted account diagnostics |
 | `auth` | Server validation, browser OAuth, credential verification, and safe browser launching |
 
@@ -47,9 +50,15 @@ The provider boundary is a compiled Rust extension point, not a runtime plugin l
 
 ## Attachment gallery
 
-Press `m` to open a post's attachments after revealing any content warning. The gallery loads images on demand using the terminal protocol selected by `ratatui-image` (Kitty, Sixel, iTerm2, or Unicode half blocks). `h` / `l`, arrow keys, or the mouse wheel move between attachments. Enter opens the attachment in the default browser; video and audio use browser playback.
+Press `m` to open a post's attachments after revealing any content warning. The gallery loads images on demand using the terminal protocol selected by `ratatui-image` (Kitty, Sixel, iTerm2, or Unicode half blocks). `h` / `l`, arrow keys, or the mouse wheel move between attachments. Video and audio use optional mpv playback in Window or Terminal mode; `v` cycles those modes and Browser mode. `o` opens an online original in the browser. The composer’s file browser can open the same gallery for a selected local file. See [the media guide](media.md).
 
 Media requests carry no account token. The gallery limits downloads to 16 MiB, decoding to 40 megapixels with a 256 MiB decoder allocation limit, and retained previews to 2048 pixels per dimension. At most four attachments are cached in memory. A single pending image job prevents rapid navigation from launching parallel decoders; the returned attachment index keeps asynchronous results associated with the correct image. Decoding, resizing, and terminal protocol encoding run outside the UI thread. No media cache is written to disk. Demo previews are bundled in the executable and load without a network connection.
+
+Folder scans run on blocking workers with a traversal limit. Request IDs and account generations prevent stale listings from replacing newer navigation. Choosing a file returns to the composer’s alt-text field; previewing keeps the picker selection intact.
+
+Window players are owned by the gallery and reaped when closed. Terminal playback suspends and restores terminal state with a guard. The app uses nonblocking input polling without a detached reader, so mpv has exclusive terminal input during the handoff.
+
+Account statistics are optional: unknown counts display as unavailable. Their values do not determine whether an account is authenticated; ID, username, and handle remain required.
 
 ## Credentials and drafts
 
@@ -63,4 +72,4 @@ Browser login registers an application with `read write follow`, sends the user 
 
 ## Validation
 
-`cargo test --locked --all-targets` runs local tests and mocked API contracts. `cargo clippy --locked --all-targets -- -D warnings` checks the code, and `cargo fmt --all -- --check` checks formatting. CI runs those checks plus a release build. Live OAuth, real server policy differences, and compositor behavior still require testing with an actual account and terminal session.
+`cargo test --locked --all-targets` runs local tests and mocked API contracts. `cargo clippy --locked --all-targets -- -D warnings` checks the code, and `cargo fmt --all -- --check` checks formatting. CI runs those checks plus a release build. `scripts/smoke-terminal.py` exercises a real PTY including attachment browsing, inline preview, alt text, drafts, and restoration. The optional `scripts/smoke-video.py` uses ffmpeg and mpv with a generated silent clip to verify real terminal frames, return to the gallery, and missing-player recovery. Live OAuth, real server policy differences, and compositor behavior still require testing with an actual account and terminal session.

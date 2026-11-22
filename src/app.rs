@@ -2,6 +2,7 @@ use crate::{
     auth,
     config::{self, Config},
     editor,
+    file_picker::{self, FileKind, Listing},
     model::*,
     provider::{SocialProvider, demo::DemoProvider, mastodon::Mastodon},
     view::*,
@@ -10,7 +11,7 @@ use anyhow::{Result, bail};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use std::{
     future::Future,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -37,6 +38,7 @@ enum Data {
     Poll(Poll),
     List(SocialList),
     Done(String),
+    Files(u64, std::result::Result<Listing, String>),
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Job {
@@ -54,13 +56,14 @@ struct Message {
 /// must never retarget a destructive action while the dialog is visible.
 enum Confirmation {
     Delete(Box<Post>),
-    Account(Account, String),
+    Account(Box<Account>, String),
 }
 
 pub struct App {
     pub view: View,
     pub quit: bool,
     pub media_requested: Option<Post>,
+    pub local_media_requested: Option<PathBuf>,
     provider: Arc<dyn SocialProvider>,
     config: Config,
     root: Option<PathBuf>,
@@ -68,6 +71,7 @@ pub struct App {
     generation: u64,
     request: u64,
     intent: u64,
+    picker_request: u64,
     confirmation: Option<Confirmation>,
     cursor: Option<String>,
     history: Vec<Feed>,
@@ -120,6 +124,7 @@ impl App {
             generation: 0,
             request: 0,
             intent: 0,
+            picker_request: 0,
             confirmation: None,
             cursor: None,
             history: vec![],
@@ -127,6 +132,7 @@ impl App {
             rx,
             notice_at: Instant::now(),
             media_requested: None,
+            local_media_requested: None,
             list_add_author: None,
             draft_dirty: false,
             last_draft_save: Instant::now(),
@@ -224,6 +230,28 @@ impl App {
                 self.view.busy = false;
             }
             match msg.result {
+                Ok(Data::Files(request, result)) => {
+                    if request != self.picker_request
+                        || !matches!(self.view.modal, Modal::FileBrowser)
+                    {
+                        continue;
+                    }
+                    let picker = &mut self.view.file_browser;
+                    picker.loading = false;
+                    match result {
+                        Ok(listing) => {
+                            picker.directory = listing.directory;
+                            if !picker.editing_location {
+                                picker.location = picker.directory.to_string_lossy().into_owned();
+                                picker.cursor = picker.location.len();
+                            }
+                            picker.entries = listing.entries;
+                            picker.omitted = listing.omitted;
+                            picker.error = None;
+                        }
+                        Err(error) => picker.error = Some(error),
+                    }
+                }
                 Err(e) => {
                     if matches!(msg.job, Job::Feed(_)) {
                         self.view.connected = false;
@@ -479,6 +507,12 @@ impl App {
                 self.view.compose_field = i.min(5);
                 self.view.compose_cursor = self.compose_text().len();
             }
+            Hit::FileSelect(i) => {
+                self.view.file_browser.selected =
+                    i.min(self.view.file_browser.entries.len().saturating_sub(1));
+                self.view.file_browser.editing_location = false;
+                self.view.file_browser.error = None;
+            }
             Hit::ModalSelect(i) => {
                 self.set_modal_selection(i);
                 self.activate_modal();
@@ -487,6 +521,7 @@ impl App {
     }
     fn set_modal_selection(&mut self, i: usize) {
         match &mut self.view.modal {
+            Modal::FileBrowser => self.view.file_browser.selected = i,
             Modal::Palette { selected, .. }
             | Modal::Accounts { selected }
             | Modal::Lists { selected }
@@ -497,7 +532,17 @@ impl App {
         }
     }
     fn move_selection(&mut self, delta: isize) {
+        if matches!(self.view.modal, Modal::FileBrowser) {
+            self.view.file_browser.editing_location = false;
+            if !self.view.file_browser.entries.is_empty() {
+                self.view.file_browser.error = None;
+            }
+        }
         let (selected, len) = match &self.view.modal {
+            Modal::FileBrowser => (
+                self.view.file_browser.selected,
+                self.view.file_browser.entries.len(),
+            ),
             Modal::Palette { query, selected } => (*selected, commands(query).len()),
             Modal::Accounts { selected } => (*selected, self.view.accounts.len()),
             Modal::Lists { selected } => (*selected, self.view.lists.len()),
@@ -533,6 +578,10 @@ impl App {
             self.command("quit");
             return;
         }
+        if matches!(self.view.modal, Modal::FileBrowser) {
+            self.file_browser_key(key);
+            return;
+        }
         if matches!(self.view.modal, Modal::Compose) {
             if self.view.busy {
                 if key.code == KeyCode::Esc {
@@ -554,6 +603,9 @@ impl App {
                 KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::ALT) => {
                     self.command("attach")
                 }
+                KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    self.command("browse")
+                }
                 KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::ALT) => {
                     self.command("poll_multiple")
                 }
@@ -564,7 +616,7 @@ impl App {
                     self.command("sensitive")
                 }
                 KeyCode::F(2) => self.command("visibility"),
-                KeyCode::F(3) => self.command("attach"),
+                KeyCode::F(3) => self.command("browse"),
                 KeyCode::F(4) => self.command("send"),
                 KeyCode::Tab => {
                     self.view.compose_field = (self.view.compose_field + 1) % 6;
@@ -752,6 +804,10 @@ impl App {
     fn paste(&mut self, text: &str) {
         self.intent = self.intent.wrapping_add(1);
         match &mut self.view.modal {
+            Modal::FileBrowser if self.view.file_browser.editing_location => {
+                let picker = &mut self.view.file_browser;
+                editor::insert(&mut picker.location, &mut picker.cursor, text, false);
+            }
             Modal::Compose if !self.view.busy => {
                 let mut c = self.view.compose_cursor;
                 let multi = self.view.compose_field == 0;
@@ -796,6 +852,7 @@ impl App {
     }
     fn activate_modal(&mut self) {
         match self.view.modal.clone() {
+            Modal::FileBrowser => self.file_browser_activate(),
             Modal::Input { purpose, value, .. } => {
                 self.view.modal = Modal::None;
                 self.submit_input(&purpose, value);
@@ -1039,7 +1096,8 @@ impl App {
                         self.notice("Choose another account", false);
                         return;
                     }
-                    self.confirmation = Some(Confirmation::Account(account, cmd.to_owned()));
+                    self.confirmation =
+                        Some(Confirmation::Account(Box::new(account), cmd.to_owned()));
                     self.view.modal = Modal::Confirm {
                         title: format!("Toggle {cmd} for this account?"),
                         detail: "This changes which posts and interactions you receive.".into(),
@@ -1138,6 +1196,10 @@ impl App {
                 self.save_current_draft(true);
             }
             "cancel" => {
+                if matches!(self.view.modal, Modal::FileBrowser) {
+                    self.close_file_browser();
+                    return;
+                }
                 if matches!(self.view.modal, Modal::Compose) && !self.save_current_draft(true) {
                     return;
                 }
@@ -1167,13 +1229,14 @@ impl App {
                 self.draft_dirty = true;
             }
             "attach" => {
-                let path = self.view.attachment_path.trim();
-                if path.is_empty() {
-                    self.view.compose_field = 2;
-                    self.view.compose_cursor = 0;
+                let value = self.view.attachment_path.as_str();
+                if value.trim().is_empty() {
+                    self.open_file_browser();
                     return;
                 }
-                if !std::path::Path::new(path).is_file() {
+                let directory = std::env::current_dir().unwrap_or_default();
+                let path = file_picker::resolve_location(value, &directory);
+                if !path.is_file() {
                     self.notice("Attachment path must point to an existing file", true);
                     return;
                 }
@@ -1182,7 +1245,7 @@ impl App {
                     return;
                 }
                 self.view.composer.attachments.push(Attachment {
-                    path: path.into(),
+                    path: path.to_string_lossy().into_owned(),
                     description: self.view.attachment_alt.trim().into(),
                 });
                 self.view.attachment_path.clear();
@@ -1191,9 +1254,233 @@ impl App {
                 self.draft_dirty = true;
                 self.notice("Attachment added. Alt text travels with your media.", false);
             }
+            "browse" => self.open_file_browser(),
+            "browse_open" => self.file_browser_activate(),
+            "browse_preview" => {
+                if let Some(entry) = self
+                    .view
+                    .file_browser
+                    .entries
+                    .get(self.view.file_browser.selected)
+                    && entry.kind != FileKind::Directory
+                {
+                    self.local_media_requested = Some(entry.path.clone());
+                }
+            }
+            "preview_attachment" => {
+                let value = if self.view.attachment_path.trim().is_empty() {
+                    self.view
+                        .composer
+                        .attachments
+                        .last()
+                        .map(|attachment| attachment.path.as_str())
+                } else {
+                    Some(self.view.attachment_path.as_str())
+                };
+                if let Some(value) = value {
+                    let path = file_picker::resolve_location(
+                        value,
+                        &std::env::current_dir().unwrap_or_default(),
+                    );
+                    self.local_media_requested = Some(path);
+                } else {
+                    self.notice("Choose a file or add an attachment to preview it", false);
+                }
+            }
+            "browse_up" => self.file_browser_up(),
+            "browse_home" => self.browse_directory(file_picker::initial_directory(None)),
+            "browse_location" => {
+                self.view.file_browser.editing_location = true;
+                self.view.file_browser.cursor = self.view.file_browser.location.len();
+            }
+            "browse_go" => self.file_browser_location(),
+            "browse_filter" => {
+                self.view.file_browser.filter = self.view.file_browser.filter.next();
+                self.browse_directory(self.view.file_browser.directory.clone());
+            }
+            "browse_hidden" => {
+                self.view.file_browser.show_hidden = !self.view.file_browser.show_hidden;
+                self.browse_directory(self.view.file_browser.directory.clone());
+            }
             "remove_attachment" => {
                 self.view.composer.attachments.pop();
                 self.draft_dirty = true;
+            }
+            _ => {}
+        }
+    }
+    fn open_file_browser(&mut self) {
+        if !matches!(self.view.modal, Modal::Compose) {
+            return;
+        }
+        if !self.view.capabilities.media {
+            self.notice("This network does not support attachments", true);
+            return;
+        }
+        if self.view.composer.attachments.len() >= 4 {
+            self.notice("A post can contain up to four attachments", true);
+            return;
+        }
+        let last = &self.view.file_browser.directory;
+        let mut directory = file_picker::initial_directory(if last.as_os_str().is_empty() {
+            None
+        } else {
+            Some(last)
+        });
+        if !self.view.attachment_path.trim().is_empty() {
+            let current = std::env::current_dir().unwrap_or_else(|_| directory.clone());
+            let entered = file_picker::resolve_location(&self.view.attachment_path, &current);
+            if entered.is_dir() {
+                directory = entered;
+            } else if let Some(parent) = entered.parent()
+                && parent.is_dir()
+            {
+                directory = parent.to_owned();
+            }
+        }
+        self.view.modal = Modal::FileBrowser;
+        self.browse_directory(directory);
+    }
+    fn browse_directory(&mut self, directory: PathBuf) {
+        if !matches!(self.view.modal, Modal::FileBrowser) {
+            return;
+        }
+        self.picker_request = self.picker_request.wrapping_add(1);
+        let request = self.picker_request;
+        let picker = &mut self.view.file_browser;
+        picker.directory = directory.clone();
+        picker.location = directory.to_string_lossy().into_owned();
+        picker.cursor = picker.location.len();
+        picker.editing_location = false;
+        picker.selected = 0;
+        picker.offset = 0;
+        picker.entries.clear();
+        picker.omitted = 0;
+        picker.error = None;
+        picker.loading = true;
+        let filter = picker.filter;
+        let hidden = picker.show_hidden;
+        self.spawn(Job::Background, async move {
+            let result =
+                tokio::task::spawn_blocking(move || file_picker::scan(&directory, filter, hidden))
+                    .await;
+            let result = match result {
+                Ok(result) => result.map_err(|error| format!("{error:#}")),
+                Err(_) => Err("Could not finish reading this folder. Try another location.".into()),
+            };
+            Ok(Data::Files(request, result))
+        });
+    }
+    fn close_file_browser(&mut self) {
+        self.picker_request = self.picker_request.wrapping_add(1);
+        self.view.file_browser.loading = false;
+        self.view.file_browser.editing_location = false;
+        self.view.modal = Modal::Compose;
+    }
+    fn file_browser_up(&mut self) {
+        if let Some(parent) = self.view.file_browser.directory.parent() {
+            self.browse_directory(parent.to_owned());
+        }
+    }
+    fn file_browser_activate(&mut self) {
+        if self.view.file_browser.loading {
+            return;
+        }
+        if self.view.file_browser.editing_location {
+            self.file_browser_location();
+            return;
+        }
+        if let Some(entry) = self
+            .view
+            .file_browser
+            .entries
+            .get(self.view.file_browser.selected)
+            .cloned()
+        {
+            if entry.kind == FileKind::Directory {
+                self.browse_directory(entry.path);
+            } else {
+                self.choose_attachment(&entry.path);
+            }
+        }
+    }
+    fn choose_attachment(&mut self, path: &Path) {
+        let Some(value) = path.to_str() else {
+            self.view.file_browser.error =
+                Some("This filename is not valid Unicode. Rename it before attaching.".into());
+            return;
+        };
+        if !path.is_file() {
+            self.view.file_browser.error =
+                Some("This file is no longer available. Refresh the folder with R.".into());
+            return;
+        }
+        self.view.attachment_path = value.to_owned();
+        self.close_file_browser();
+        self.view.compose_field = 3;
+        self.view.compose_cursor = self.view.attachment_alt.len();
+        self.notice(
+            "File selected. Add a description, then Alt+A or Add file to attach it.",
+            false,
+        );
+    }
+    fn file_browser_location(&mut self) {
+        let picker = &self.view.file_browser;
+        if picker.location.trim().is_empty() {
+            return;
+        }
+        let path = file_picker::resolve_location(&picker.location, &picker.directory);
+        if path.is_file() {
+            if file_picker::media_kind(&path).is_some() {
+                self.choose_attachment(&path);
+            } else {
+                self.view.file_browser.error =
+                    Some("Choose an image, video, or audio file.".into());
+            }
+        } else {
+            self.browse_directory(path);
+        }
+    }
+    fn file_browser_key(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Esc {
+            self.close_file_browser();
+            return;
+        }
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if ctrl && key.code == KeyCode::Char('l') {
+            self.command("browse_location");
+            return;
+        }
+        if self.view.file_browser.editing_location {
+            match key.code {
+                KeyCode::Enter => self.file_browser_location(),
+                KeyCode::Tab => self.view.file_browser.editing_location = false,
+                _ => {
+                    let picker = &mut self.view.file_browser;
+                    editor::edit(&mut picker.location, &mut picker.cursor, key, false);
+                }
+            }
+            return;
+        }
+        match key.code {
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => self.file_browser_up(),
+            KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
+            KeyCode::PageUp => self.move_selection(-10),
+            KeyCode::PageDown => self.move_selection(10),
+            KeyCode::Home => self.view.file_browser.selected = 0,
+            KeyCode::End => {
+                self.view.file_browser.selected =
+                    self.view.file_browser.entries.len().saturating_sub(1)
+            }
+            KeyCode::Enter | KeyCode::Right => self.file_browser_activate(),
+            KeyCode::Backspace | KeyCode::Left => self.file_browser_up(),
+            KeyCode::Tab | KeyCode::Char('f') => self.command("browse_filter"),
+            KeyCode::Char('.') => self.command("browse_hidden"),
+            KeyCode::Char('p') => self.command("browse_preview"),
+            KeyCode::Char('~') => self.command("browse_home"),
+            KeyCode::F(5) | KeyCode::Char('R') => {
+                self.browse_directory(self.view.file_browser.directory.clone())
             }
             _ => {}
         }
@@ -1252,7 +1539,7 @@ impl App {
                     });
                 }
             }
-            Some(Confirmation::Account(account, kind)) => self.account_action_on(account, &kind),
+            Some(Confirmation::Account(account, kind)) => self.account_action_on(*account, &kind),
             None => {}
         }
     }
@@ -1391,7 +1678,7 @@ impl App {
         }
         if !self.view.attachment_path.trim().is_empty() {
             self.notice(
-                "Use Alt+A or F3 to add the entered attachment before publishing",
+                "Use Alt+A or click Add file to add the selected attachment before publishing",
                 true,
             );
             return;

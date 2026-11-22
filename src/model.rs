@@ -8,9 +8,9 @@ pub struct Account {
     pub display_name: String,
     pub note: String,
     pub url: String,
-    pub followers_count: u64,
-    pub following_count: u64,
-    pub statuses_count: u64,
+    pub followers_count: Option<u64>,
+    pub following_count: Option<u64>,
+    pub statuses_count: Option<u64>,
     pub locked: bool,
 }
 impl Account {
@@ -142,7 +142,7 @@ impl Feed {
             Self::Federated => "Federated".into(),
             Self::Notifications => "Notifications".into(),
             Self::Bookmarks => "Bookmarks".into(),
-            Self::Favourites => "Favourites".into(),
+            Self::Favourites => "Favorites".into(),
             Self::Search(q) => format!("Search · {q}"),
             Self::Profile(_) => "Profile".into(),
             Self::Thread(_) => "Conversation".into(),

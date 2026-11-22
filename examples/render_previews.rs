@@ -14,11 +14,12 @@ use ratatui_image::picker::Picker;
 use tootles::{
     app::App,
     config::Config,
+    file_picker::{Entry, FileKind},
     media::Gallery,
     model::{Attachment, Feed, Post},
     provider::{SocialProvider, demo::DemoProvider},
     snapshot, ui,
-    view::{Modal, Theme},
+    view::{FileBrowser, Modal, Theme},
 };
 
 const WIDTH: u16 = 150;
@@ -57,6 +58,33 @@ async fn main() -> Result<()> {
     app.view.compose_field = 0;
     app.view.compose_cursor = app.view.composer.text.len();
     save_ui(&mut terminal, &mut app, &output.join("compose.svg"))?;
+
+    // A synthetic listing keeps previews deterministic and never exposes files
+    // from the machine rendering the documentation.
+    app.view.modal = Modal::FileBrowser;
+    app.view.file_browser = FileBrowser {
+        directory: PathBuf::from("/home/demo/Pictures"),
+        location: "/home/demo/Pictures".into(),
+        selected: 3,
+        entries: [
+            ("Camera", FileKind::Directory, 0),
+            ("Screenshots", FileKind::Directory, 0),
+            ("campfire.webm", FileKind::Video, 8_244_100),
+            ("mountain trail.png", FileKind::Image, 2_841_200),
+            ("night sky.jpg", FileKind::Image, 1_450_100),
+            ("river sounds.ogg", FileKind::Audio, 4_190_200),
+        ]
+        .into_iter()
+        .map(|(name, kind, bytes)| Entry {
+            path: PathBuf::from("/home/demo/Pictures").join(name),
+            name: name.into(),
+            kind,
+            bytes,
+        })
+        .collect(),
+        ..FileBrowser::default()
+    };
+    save_ui(&mut terminal, &mut app, &output.join("files.svg"))?;
 
     app.view.modal = Modal::Palette {
         query: "post".into(),
@@ -105,7 +133,7 @@ async fn main() -> Result<()> {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     println!(
-        "Rendered home, compose, palette, notifications, and media previews in {}",
+        "Rendered home, compose, files, palette, notifications, and media previews in {}",
         output.display()
     );
     Ok(())

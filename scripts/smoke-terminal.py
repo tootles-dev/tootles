@@ -6,6 +6,7 @@ root=os.path.join(root,'private')
 env=dict(os.environ, TERM='xterm-256color', COLORTERM='truecolor')
 env.pop('NO_COLOR',None)
 binary=os.environ.get('TOOTLES_TEST_BINARY',os.path.abspath('target/release/tootles'))
+attachments=os.path.abspath(os.path.join(os.path.dirname(__file__),'..','assets'))
 pid,fd=pty.fork()
 if pid==0:
  os.execve(binary,[binary,'--demo','--no-motion','--config-dir',root],env)
@@ -31,6 +32,17 @@ try:
  assert b'tootles' in output,output[-1000:]
  send(b'n',.5)
  send('\x1b[200~Hello from the PTY smoke test.\nUnicode works: 🌌 café\x1b[201~'.encode())
+ # Browse and preview a bundled image without opening a browser or network URL.
+ send(b'\x1b[13~',.4)
+ send(b'\x0c\x15')
+ send(('\x1b[200~'+attachments+'\x1b[201~\r').encode(),.6)
+ send(b'p',.8)
+ assert b'LOCAL MEDIA' in output,'local image gallery did not open'
+ assert '▀'.encode() in output or '▄'.encode() in output,'local image pixels were not rendered'
+ send(b'\x1b',.3)
+ send(b'\r',.3)
+ send(b'\x1b[200~A bundled landscape used to verify the attachment browser.\x1b[201~')
+ send(b'\x1ba',.3)
  send(b'\x13')
  send(b'\x1b',.3)
  send(b'd')
@@ -56,7 +68,10 @@ try:
  assert drafts,os.listdir(root)
  data=json.load(open(os.path.join(root,drafts[0])))
  assert data[0]['text']=='Hello from the PTY smoke test.\nUnicode works: 🌌 café',data
- print('PASS: real PTY launch, bracketed multiline Unicode paste, save/resume draft, search, mouse input, resize, help, quit, terminal restoration')
+ assert len(data[0]['attachments'])==1,data
+ assert data[0]['attachments'][0]['path']==os.path.join(attachments,'demo-desktop.png'),data
+ assert data[0]['attachments'][0]['description']=='A bundled landscape used to verify the attachment browser.',data
+ print('PASS: real PTY launch, Unicode paste, browse/local image preview/attach with alt text, save/resume draft, search, mouse, resize, help, quit, terminal restoration')
  print('Captured',len(output),'terminal bytes; draft verified')
 finally:
  try: os.kill(pid,15)

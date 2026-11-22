@@ -5,7 +5,7 @@ use image::{DynamicImage, ImageFormat};
 use ratatui::{Terminal, backend::TestBackend};
 use ratatui_image::picker::Picker;
 use tootles::{
-    media::{Gallery, MAX_DOWNLOAD_BYTES, decode_image, fetch_image},
+    media::{Gallery, MAX_DOWNLOAD_BYTES, decode_image, fetch_image, load_file},
     model::{Media, Post},
 };
 
@@ -15,6 +15,120 @@ fn png(width: u32, height: u32) -> Vec<u8> {
         .write_to(&mut bytes, ImageFormat::Png)
         .unwrap();
     bytes.into_inner()
+}
+
+#[tokio::test]
+async fn local_preview_reads_selected_images_with_download_and_decode_budgets() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("a local photo.png");
+    std::fs::write(&path, png(30, 20)).unwrap();
+    let image = load_file(&path).await.unwrap();
+    assert_eq!((image.width(), image.height()), (30, 20));
+    assert!(load_file(directory.path()).await.is_err());
+    assert!(
+        load_file(&directory.path().join("missing.png"))
+            .await
+            .is_err()
+    );
+    std::fs::write(&path, b"not an image").unwrap();
+    assert!(load_file(&path).await.is_err());
+    std::fs::File::create(&path)
+        .unwrap()
+        .set_len((MAX_DOWNLOAD_BYTES + 1) as u64)
+        .unwrap();
+    assert!(
+        load_file(&path)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("16 MiB")
+    );
+}
+
+fn screen(gallery: &mut Gallery) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+    terminal.draw(|frame| gallery.render(frame)).unwrap();
+    terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect()
+}
+
+fn press(gallery: &mut Gallery, code: KeyCode) {
+    gallery.event(&Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+}
+
+#[tokio::test]
+async fn local_image_gallery_renders_inline_and_returns_without_uploading() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("photo.png");
+    std::fs::write(&path, png(30, 20)).unwrap();
+    let mut gallery = Gallery::from_file(path, Picker::halfblocks());
+    assert!(screen(&mut gallery).contains("LOCAL MEDIA"));
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        gallery.tick();
+        let text = screen(&mut gallery);
+        if !text.contains("Preparing image") {
+            assert!(!text.contains("preview unavailable"));
+            assert!(text.contains("This file has not been uploaded"));
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(gallery.take_terminal_request().is_none());
+    press(&mut gallery, KeyCode::Char('o'));
+    assert!(screen(&mut gallery).contains("This local image is displayed here"));
+    assert!(gallery.event(&Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))));
+}
+
+#[test]
+fn video_gallery_requires_explicit_play_and_hands_terminal_requests_to_main() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("video.mp4");
+    std::fs::write(&path, b"fake local clip").unwrap();
+    let mut gallery = Gallery::from_file(path, Picker::halfblocks());
+    assert!(screen(&mut gallery).contains("Window mode"));
+    assert!(gallery.take_terminal_request().is_none());
+    press(&mut gallery, KeyCode::Char('v'));
+    assert!(screen(&mut gallery).contains("Terminal mode"));
+    assert!(gallery.take_terminal_request().is_none());
+    press(&mut gallery, KeyCode::Enter);
+    assert!(gallery.take_terminal_request().is_some());
+    assert!(gallery.take_terminal_request().is_none());
+    gallery.playback_finished(Err(anyhow::anyhow!("mpv is unavailable")));
+    assert!(screen(&mut gallery).contains("mpv is unavailable"));
+    press(&mut gallery, KeyCode::Char('v'));
+    press(&mut gallery, KeyCode::Enter);
+    assert!(screen(&mut gallery).contains("Local files play in Window or Terminal mode"));
+}
+
+#[test]
+fn remote_video_cannot_access_local_files_or_embedded_credentials() {
+    for url in [
+        "file:///tmp/movie.mp4",
+        "https://name:secret@example.com/movie.mp4",
+    ] {
+        let mut gallery = Gallery::new(
+            Post {
+                media: vec![Media {
+                    kind: "video".into(),
+                    url: url.into(),
+                    ..Media::default()
+                }],
+                ..Post::default()
+            },
+            Picker::halfblocks(),
+        );
+        press(&mut gallery, KeyCode::Char('v'));
+        press(&mut gallery, KeyCode::Enter);
+        assert!(gallery.take_terminal_request().is_none());
+        assert!(screen(&mut gallery).contains("HTTP or HTTPS URL"));
+    }
 }
 
 #[test]

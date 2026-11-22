@@ -105,7 +105,7 @@ async fn instance_character_limit_and_account_fields_are_loaded() {
     let provider = client(&server);
     let me = provider.me().await.unwrap();
     assert_eq!(me.note, "Hello & welcome");
-    assert_eq!(me.followers_count, 12);
+    assert_eq!(me.followers_count, Some(12));
     assert_eq!(provider.capabilities().max_characters, 1500);
 }
 

@@ -193,17 +193,25 @@ impl Mastodon {
             .as_str()
         {
             "png" => "image/png",
-            "jpg" | "jpeg" => "image/jpeg",
+            "jpg" | "jpeg" | "jpe" => "image/jpeg",
             "gif" => "image/gif",
             "webp" => "image/webp",
             "avif" => "image/avif",
+            "heic" => "image/heic",
+            "heif" => "image/heif",
+            "bmp" => "image/bmp",
+            "tif" | "tiff" => "image/tiff",
             "mp4" | "m4v" => "video/mp4",
             "webm" => "video/webm",
             "mov" => "video/quicktime",
+            "mkv" => "video/x-matroska",
+            "avi" => "video/x-msvideo",
             "mp3" => "audio/mpeg",
-            "ogg" | "oga" => "audio/ogg",
+            "ogg" | "oga" | "opus" => "audio/ogg",
             "wav" => "audio/wav",
             "flac" => "audio/flac",
+            "m4a" => "audio/mp4",
+            "aac" => "audio/aac",
             _ => "application/octet-stream",
         };
         let file = reqwest::multipart::Part::bytes(bytes)
@@ -707,11 +715,30 @@ struct WireAccount {
     note: String,
     url: Option<String>,
     uri: Option<String>,
-    followers_count: u64,
-    following_count: u64,
-    statuses_count: u64,
+    #[serde(deserialize_with = "account_count")]
+    followers_count: Option<u64>,
+    #[serde(deserialize_with = "account_count")]
+    following_count: Option<u64>,
+    #[serde(deserialize_with = "account_count")]
+    statuses_count: Option<u64>,
     locked: bool,
 }
+
+/// Account statistics are informational, never proof of identity. Compatible
+/// servers can withhold them, use strings, or expose stale negative counters.
+/// Preserve an unavailable value as None instead of rejecting a valid login or
+/// presenting a made-up zero. IDs and other identity fields remain strict.
+fn account_count<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<u64>, D::Error> {
+    let value = Value::deserialize(deserializer)?;
+    Ok(match value {
+        Value::Number(number) => number.as_u64(),
+        Value::String(number) => number.trim().parse().ok(),
+        _ => None,
+    })
+}
+
 impl From<WireAccount> for Account {
     fn from(a: WireAccount) -> Self {
         Self {

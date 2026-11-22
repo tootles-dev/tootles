@@ -29,10 +29,10 @@ This follows the [Hyprland bind syntax](https://wiki.hypr.land/0.54.0/configurin
 | Key | Action |
 | --- | --- |
 | `j` / `k`, arrow keys | Move between posts |
-| `1` … `6` | Home, local, federated, notifications, bookmarks, favourites |
+| `1` … `6` | Home, local, federated, notifications, bookmarks, favorites |
 | `Enter` | Open the conversation |
 | `n` / `r` | New post / reply |
-| `f` / `b` / `s` | Favourite / boost / bookmark |
+| `f` / `b` / `s` | Favorite / boost / bookmark |
 | `/` | Search |
 | `a` | Switch account |
 | `m` | Open the attachment gallery |
@@ -46,6 +46,6 @@ The command palette exposes less frequent actions and a reduced-motion toggle. C
 
 Browser login and opening posts or media externally use `xdg-open` on Linux. Make sure a default browser is configured and `xdg-open` is installed. If launching the browser fails during login, Tootles prints the authorization address for manual opening.
 
-Press `m` to view attachments in the terminal. The gallery detects supported image protocols and falls back to colored Unicode half blocks when necessary. Kitty is a good fit for full-resolution terminal images. Images load only when the gallery is opened; content warnings must be revealed first. `h` / `l` or arrow keys move between attachments, Enter opens the current item externally, and Escape returns to the timeline. Video and audio play in the browser with native playback controls; inline terminal video playback is not included.
+Press `m` to view attachments in the terminal. The gallery detects supported image protocols and falls back to colored Unicode half blocks when necessary. Kitty is a good fit for full-resolution terminal images. Images load only when the gallery is opened; content warnings must be revealed first. `h` / `l` or arrow keys move between attachments and Escape returns to the timeline. For video or audio, `v` cycles Window, Terminal, and Browser modes; Enter starts playback. Install `mpv` separately for the first two modes. Window mode opens a regular player window managed by Hyprland. Terminal mode temporarily gives mpv the terminal, using Kitty graphics when detected or true-color text otherwise; `q` returns to Tootles. The attachment browser also previews selected local files with `p`. See [the media guide](media.md) for details.
 
 No global shortcuts, compositor rules, or Hyprland configuration are modified by Tootles.

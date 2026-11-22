@@ -563,7 +563,6 @@ dependencies = [
  "crossterm_winapi",
  "derive_more",
  "document-features",
- "futures-core",
  "mio",
  "parking_lot",
  "rustix 1.1.6",
@@ -3051,7 +3050,7 @@ checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
 
 [[package]]
 name = "tootles"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3059,7 +3058,6 @@ dependencies = [
  "clap",
  "clap_complete",
  "crossterm",
- "futures-util",
  "html-escape",
  "image",
  "ratatui",

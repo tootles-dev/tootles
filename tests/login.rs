@@ -239,7 +239,7 @@ async fn html_success_response_is_rejected_without_echoing_body_or_token() {
 async fn wrong_schema_reports_the_field_without_echoing_its_sensitive_value() {
     let server = MockServer::start().await;
     let mut account = credential_account();
-    account["followers_count"] = json!(format!("{SERVER_SENTINEL}: {TOKEN}"));
+    account["username"] = json!([format!("{SERVER_SENTINEL}: {TOKEN}")]);
     mount_credentials(
         &server,
         ResponseTemplate::new(200).set_body_json(account),
@@ -250,5 +250,47 @@ async fn wrong_schema_reports_the_field_without_echoing_its_sensitive_value() {
     let root = directory.path().join("private");
     let output = login(&server, &root, None).await;
     assert_login_rejected(&output, &root);
-    assert!(String::from_utf8_lossy(&output.stderr).contains("followers_count"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("username"));
+}
+
+#[tokio::test]
+async fn nonstandard_or_unavailable_statistics_do_not_block_verified_login() {
+    // Reproduce the user's infosec.exchange failure at followers_count. Only
+    // the field was disclosed, so cover its useful and unavailable JSON forms.
+    for (value, expected) in [
+        (json!(42), Some(42)),
+        (json!(0), Some(0)),
+        (json!("42"), Some(42)),
+        (json!(null), None),
+        (json!(-1), None),
+        (json!("-1"), None),
+        (json!("unavailable"), None),
+        (json!(false), None),
+        (json!({"hidden":true}), None),
+    ] {
+        let server = MockServer::start().await;
+        let mut body = credential_account();
+        for key in ["followers_count", "following_count", "statuses_count"] {
+            body[key] = value.clone();
+        }
+        mount_credentials(&server, ResponseTemplate::new(200).set_body_json(body), 2).await;
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("private");
+        let output = login(&server, &root, None).await;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_private_output(&output);
+        assert_eq!(Config::load(Some(&root)).unwrap().accounts.len(), 1);
+        let account = Mastodon::new(&server.uri(), TOKEN)
+            .unwrap()
+            .me()
+            .await
+            .unwrap();
+        assert_eq!(account.followers_count, expected);
+        assert_eq!(account.following_count, expected);
+        assert_eq!(account.statuses_count, expected);
+    }
 }

@@ -1,20 +1,16 @@
 use anyhow::{Context, Result, bail};
 use clap::{CommandFactory, Parser, Subcommand};
 use crossterm::{
-    event::{
-        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        EventStream,
-    },
+    event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use futures_util::StreamExt;
 use ratatui::{
     Terminal,
     backend::{CrosstermBackend, TestBackend},
 };
 use std::{
-    io::{self, IsTerminal, Read},
+    io::{self, IsTerminal, Read, Write},
     path::PathBuf,
     time::Duration,
 };
@@ -23,6 +19,7 @@ use tootles::{
     app::{App, parse_theme, theme_key},
     auth,
     config::Config,
+    player::{self, TerminalOutput},
     ui,
 };
 
@@ -274,6 +271,55 @@ impl Drop for TerminalGuard {
         );
     }
 }
+
+/// Resume even when a player launch or an early return fails. The outer guard
+/// still restores the original shell if resuming the TUI itself fails.
+struct TerminalHandoff {
+    mouse: bool,
+    resumed: bool,
+}
+
+impl TerminalHandoff {
+    fn suspend(mouse: bool) -> Result<Self> {
+        let handoff = Self {
+            mouse,
+            resumed: false,
+        };
+        disable_raw_mode()?;
+        execute!(
+            io::stdout(),
+            DisableMouseCapture,
+            DisableBracketedPaste,
+            crossterm::cursor::Show,
+            LeaveAlternateScreen
+        )?;
+        Ok(handoff)
+    }
+
+    fn resume(&mut self) -> Result<()> {
+        enable_raw_mode()?;
+        execute!(
+            io::stdout(),
+            EnterAlternateScreen,
+            EnableBracketedPaste,
+            crossterm::cursor::Hide
+        )?;
+        if self.mouse {
+            execute!(io::stdout(), EnableMouseCapture)?;
+        }
+        self.resumed = true;
+        Ok(())
+    }
+}
+
+impl Drop for TerminalHandoff {
+    fn drop(&mut self) {
+        if !self.resumed {
+            let _ = self.resume();
+        }
+    }
+}
+
 async fn tui(app: &mut App, mouse: bool, image_protocol: &str) -> Result<()> {
     app.view.mouse_enabled = mouse;
     let previous = std::panic::take_hook();
@@ -302,38 +348,80 @@ async fn tui(app: &mut App, mouse: bool, image_protocol: &str) -> Result<()> {
         ratatui_image::picker::Picker::from_query_stdio()
             .unwrap_or_else(|_| ratatui_image::picker::Picker::halfblocks())
     };
+    let terminal_output = if picker.protocol_type() == ratatui_image::picker::ProtocolType::Kitty {
+        TerminalOutput::Kitty
+    } else {
+        TerminalOutput::TrueColor
+    };
     let mut gallery: Option<tootles::media::Gallery> = None;
-    let mut events = EventStream::new();
+    // Poll nonblocking on this task: no detached EventStream reader can retain
+    // stdin while mpv temporarily owns the terminal. Idle polls do not redraw.
+    let mut input = tokio::time::interval(Duration::from_millis(16));
+    input.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut interval = tokio::time::interval(Duration::from_millis(80));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut effect = fx::fade_from_fg(ratatui::style::Color::Rgb(26, 27, 38), 300);
     let mut last_frame = std::time::Instant::now();
+    let mut redraw = true;
     app.initialize();
     while !app.quit {
-        let elapsed = last_frame.elapsed();
-        last_frame = std::time::Instant::now();
-        terminal.draw(|frame| {
-            ui::render(frame, &mut app.view);
-            if !app.view.reduced_motion && !effect.done() {
-                let area = frame.area();
-                effect.process(elapsed.into(), frame.buffer_mut(), area);
-            }
-            if let Some(gallery) = &mut gallery {
-                gallery.render(frame);
-            }
-        })?;
-        tokio::select! {
-            _=interval.tick()=>{app.tick();if let Some(g)=&mut gallery{g.tick();}},
-            event=events.next()=>match event {
-                Some(Ok(event))=>{
-                    if let Some(g)=&mut gallery {
-                        if g.event(&event){gallery=None;terminal.clear()?;}
-                    }else{let width=terminal.size()?.width;app.event(event,width);if let Some(post)=app.media_requested.take(){gallery=Some(tootles::media::Gallery::new(post,picker.clone()));}}
+        if redraw {
+            let elapsed = last_frame.elapsed();
+            last_frame = std::time::Instant::now();
+            terminal.draw(|frame| {
+                ui::render(frame, &mut app.view);
+                if !app.view.reduced_motion && !effect.done() {
+                    let area = frame.area();
+                    effect.process(elapsed.into(), frame.buffer_mut(), area);
                 }
-                Some(Err(err))=>return Err(err.into()),
-                None=>break,
+                if let Some(gallery) = &mut gallery {
+                    gallery.render(frame);
+                }
+            })?;
+            redraw = false;
+        }
+        tokio::select! {
+            _=interval.tick()=>{
+                app.tick();
+                if let Some(g)=&mut gallery { g.tick(); }
+                redraw=true;
+            },
+            _=input.tick()=>{
+                if crossterm::event::poll(Duration::ZERO)? {
+                    let event=crossterm::event::read()?;
+                    if let Some(g)=&mut gallery {
+                        if g.event(&event) { gallery=None; terminal.clear()?; }
+                    } else {
+                        let width=terminal.size()?.width;
+                        app.event(event,width);
+                    }
+                    redraw=true;
+                }
             },
             _=tokio::signal::ctrl_c()=>app.command("quit"),
+        }
+        if let Some(post) = app.media_requested.take() {
+            gallery = Some(tootles::media::Gallery::new(post, picker.clone()));
+            redraw = true;
+        }
+        if let Some(path) = app.local_media_requested.take() {
+            gallery = Some(tootles::media::Gallery::from_file(path, picker.clone()));
+            redraw = true;
+        }
+        if let Some(source) = gallery.as_mut().and_then(|g| g.take_terminal_request()) {
+            let mut handoff = TerminalHandoff::suspend(mouse)?;
+            writeln!(
+                io::stdout(),
+                "Tootles · Space pause · arrows seek · 9/0 volume · q return"
+            )?;
+            io::stdout().flush()?;
+            let result = player::play_terminal(&source, terminal_output).await;
+            handoff.resume()?;
+            terminal.clear()?;
+            if let Some(gallery) = &mut gallery {
+                gallery.playback_finished(result);
+            }
+            redraw = true;
         }
     }
     Ok(())

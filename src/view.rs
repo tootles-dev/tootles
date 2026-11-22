@@ -1,5 +1,7 @@
+use crate::file_picker::{Entry as FileEntry, MediaFilter};
 use crate::model::*;
 use ratatui::layout::Rect;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Theme {
@@ -41,6 +43,7 @@ pub enum Modal {
         purpose: String,
     },
     Compose,
+    FileBrowser,
     Confirm {
         title: String,
         detail: String,
@@ -70,6 +73,7 @@ pub enum Hit {
     SelectNotification(usize),
     Command(String),
     ComposerField(usize),
+    FileSelect(usize),
     ModalSelect(usize),
 }
 #[derive(Debug, Clone)]
@@ -87,6 +91,21 @@ pub struct AccountLabel {
     pub label: String,
     pub network: String,
     pub active: bool,
+}
+#[derive(Debug, Clone, Default)]
+pub struct FileBrowser {
+    pub directory: PathBuf,
+    pub entries: Vec<FileEntry>,
+    pub selected: usize,
+    pub offset: usize,
+    pub filter: MediaFilter,
+    pub show_hidden: bool,
+    pub location: String,
+    pub editing_location: bool,
+    pub cursor: usize,
+    pub loading: bool,
+    pub error: Option<String>,
+    pub omitted: usize,
 }
 #[derive(Debug, Clone)]
 pub struct Command {
@@ -132,7 +151,7 @@ pub const COMMANDS: &[Command] = &[
     },
     Command {
         id: "favourites",
-        label: "Open favourites",
+        label: "Open favorites",
         hint: "6",
     },
     Command {
@@ -152,7 +171,7 @@ pub const COMMANDS: &[Command] = &[
     },
     Command {
         id: "favourite",
-        label: "Toggle favourite",
+        label: "Toggle favorite",
         hint: "f",
     },
     Command {
@@ -306,6 +325,7 @@ pub struct View {
     pub accounts: Vec<AccountLabel>,
     pub drafts: Vec<Compose>,
     pub composer: Compose,
+    pub file_browser: FileBrowser,
     /// 0 body, 1 content warning, 2 attachment path, 3 alt text, 4 poll options, 5 language
     pub compose_field: usize,
     pub compose_cursor: usize,
@@ -351,6 +371,7 @@ impl Default for View {
             accounts: vec![],
             drafts: vec![],
             composer: Compose::default(),
+            file_browser: FileBrowser::default(),
             compose_field: 0,
             compose_cursor: 0,
             input_cursor: 0,

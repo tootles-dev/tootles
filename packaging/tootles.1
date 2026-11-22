@@ -1,4 +1,4 @@
-.TH TOOTLES 1 "November 2026" "Tootles 0.1.0" "User Commands"
+.TH TOOTLES 1 "November 2026" "Tootles 0.1.2" "User Commands"
 .SH NAME
 tootles \- a keyboard-first Mastodon client for the terminal
 .SH SYNOPSIS
@@ -39,16 +39,20 @@ Skip image capability queries and render previews as Unicode half blocks.
 Render an offline demo to an SVG or text file without a terminal.
 .SH KEYS
 j/k or arrow keys move; 1 through 6 select timelines; n composes; r replies;
-f favourites; b boosts; s bookmarks; Enter opens a thread; p opens a profile;
+f favorites; b boosts; s bookmarks; Enter opens a thread; p opens a profile;
 a switches accounts; m opens media; x reveals hidden content; v votes;
 / searches; Ctrl+K opens the command palette; ? opens help; q quits.
 .PP
-In the composer, Tab changes fields, F2 changes visibility, F3 adds an attachment,
+In the composer, Tab changes fields, F2 changes visibility, F3 browses files, Alt+A attaches the selected file and alt text,
 F4 or Ctrl+Enter publishes, Ctrl+S saves, and Escape saves and closes the draft.
 .SH MEDIA
 The gallery uses available Kitty, Sixel, or iTerm2 graphics protocols, with a
 half-block fallback. Media downloads begin only when the gallery is opened.
-Videos, audio, and original attachments open with the desktop URL handler.
+Local files can be previewed from the attachment browser with p.
+For video and audio, v cycles Window, Terminal, and Browser modes; Enter plays.
+Window and Terminal modes require an optional mpv installation.
+In terminal playback, q returns to Tootles. The o key opens online originals
+with the desktop URL handler.
 .SH FILES
 .I $XDG_CONFIG_HOME/tootles/config.toml
 or

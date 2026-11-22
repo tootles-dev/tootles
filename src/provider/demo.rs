@@ -335,9 +335,9 @@ fn account(id: &str, username: &str, display_name: &str, domain: &str, note: &st
         acct: format!("{username}@{domain}"),
         note: note.into(),
         url: format!("https://{domain}/@{username}"),
-        followers_count: 128,
-        following_count: 86,
-        statuses_count: 247,
+        followers_count: Some(128),
+        following_count: Some(86),
+        statuses_count: Some(247),
         locked: false,
     }
 }
