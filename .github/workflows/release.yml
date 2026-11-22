@@ -1,0 +1,60 @@
+name: Release CLI
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  package:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked
+      - name: Package executable, docs and completions
+        shell: bash
+        run: |
+          bundle="tootles-${{ matrix.target }}"
+          mkdir -p "$bundle/completions"
+          cp target/release/tootles README.md LICENSE packaging/tootles.1 "$bundle/"
+          cp packaging/tootles.desktop "$bundle/"
+          cp -R docs "$bundle/"
+          for shell in bash zsh fish; do
+            target/release/tootles completions "$shell" > "$bundle/completions/tootles.$shell"
+          done
+          tar -czf "$bundle.tar.gz" "$bundle"
+          shasum -a 256 "$bundle.tar.gz" > "$bundle.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tootles-${{ matrix.target }}
+          path: |
+            tootles-*.tar.gz
+            tootles-*.tar.gz.sha256
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tootles-*
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            *.tar.gz
+            *.sha256
+          generate_release_notes: true

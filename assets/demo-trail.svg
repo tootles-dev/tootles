@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="600" viewBox="0 0 960 600">
+<defs><linearGradient id="sky" x2="0" y2="1"><stop stop-color="#24283b"/><stop offset="1" stop-color="#7aa2f7"/></linearGradient><linearGradient id="earth" x2="0" y2="1"><stop stop-color="#9ece6a"/><stop offset="1" stop-color="#233b3a"/></linearGradient></defs>
+<rect width="960" height="600" fill="url(#sky)"/><circle cx="730" cy="142" r="64" fill="#e0af68"/>
+<path d="M0 355 175 162 335 333 485 200 733 389 875 240 960 325V600H0Z" fill="#414868"/>
+<path d="m98 247 77-85 83 89-63-28-28 18-26-16Z" fill="#c0caf5"/>
+<path d="M0 436 181 352 321 408 568 290 765 430 960 354V600H0Z" fill="#3b6266"/>
+<path d="M0 480Q240 397 480 457T960 455V600H0Z" fill="url(#earth)"/>
+<path d="M420 600Q635 525 553 474T563 435L573 434Q540 459 589 483T580 531Q557 565 540 600Z" fill="#e0af68"/>
+<g fill="#233b3a"><path d="m110 286-61 183h122ZM825 316l-54 158h108Z"/><path d="m189 342-43 135h86ZM771 373l-36 109h72Z"/></g>
+<g fill="#e0af68" opacity=".75"><circle cx="93" cy="492" r="3"/><circle cx="135" cy="509" r="4"/><circle cx="738" cy="541" r="4"/><circle cx="356" cy="493" r="3"/></g>
+<text x="40" y="554" font-family="sans-serif" font-size="15" letter-spacing="4" fill="#c0caf5">A LITTLE ROOM TO BREATHE</text>
+<text x="40" y="580" font-family="sans-serif" font-size="12" fill="#7dcfff">TOOTLES · OFFLINE DEMO ILLUSTRATION</text></svg>

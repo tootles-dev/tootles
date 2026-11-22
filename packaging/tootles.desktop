@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Tootles
+GenericName=Mastodon client
+Comment=A calm terminal home for the open web
+Exec=tootles
+Terminal=true
+Categories=Network;Chat;
+Keywords=Mastodon;Fediverse;Social;TUI;
+StartupNotify=false

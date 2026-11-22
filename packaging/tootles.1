@@ -1,0 +1,66 @@
+.TH TOOTLES 1 "November 2026" "Tootles 0.1.0" "User Commands"
+.SH NAME
+tootles \- a keyboard-first Mastodon client for the terminal
+.SH SYNOPSIS
+.B tootles
+.RI [ options ]
+.br
+.B tootles login
+.I instance
+.RI [ --token-stdin ]
+.br
+.B tootles
+.RI { accounts | switch | logout | theme | doctor | completions }
+.SH DESCRIPTION
+Tootles provides Mastodon timelines, search, notifications, threads, profiles,
+posting, media, polls, lists, multiple accounts, and private local drafts.
+Without an account, it starts an interactive offline demo.
+.SH OPTIONS
+.TP
+.B --demo
+Open the offline playground without using saved credentials.
+.TP
+.B --theme NAME
+Choose tokyo-night, midnight, paper, or contrast.
+.TP
+.B --config-dir DIRECTORY
+Use a separate directory for credentials, preferences, and drafts.
+.TP
+.B --no-motion
+Disable visual transitions.
+.TP
+.B --no-mouse
+Do not capture mouse events; preserve terminal text selection.
+.TP
+.B --image-protocol halfblocks
+Skip image capability queries and render previews as Unicode half blocks.
+.TP
+.B --snapshot FILE
+Render an offline demo to an SVG or text file without a terminal.
+.SH KEYS
+j/k or arrow keys move; 1 through 6 select timelines; n composes; r replies;
+f favourites; b boosts; s bookmarks; Enter opens a thread; p opens a profile;
+a switches accounts; m opens media; x reveals hidden content; v votes;
+/ searches; Ctrl+K opens the command palette; ? opens help; q quits.
+.PP
+In the composer, Tab changes fields, F2 changes visibility, F3 adds an attachment,
+F4 or Ctrl+Enter publishes, Ctrl+S saves, and Escape saves and closes the draft.
+.SH MEDIA
+The gallery uses available Kitty, Sixel, or iTerm2 graphics protocols, with a
+half-block fallback. Media downloads begin only when the gallery is opened.
+Videos, audio, and original attachments open with the desktop URL handler.
+.SH FILES
+.I $XDG_CONFIG_HOME/tootles/config.toml
+or
+.I ~/.config/tootles/config.toml
+contains preferences and plaintext access tokens. Unix files are private (0600)
+and the directory is private (0700). Account-specific drafts are stored alongside.
+.SH ENVIRONMENT
+.B TOOTLES_CONFIG_DIR
+selects a configuration directory.
+.B TOOTLES_TOKEN
+supplies an existing token to the login command.
+.B NO_COLOR
+selects high contrast and disables transitions.
+.SH SEE ALSO
+.BR xdg-open (1)
