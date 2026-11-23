@@ -33,7 +33,7 @@ mod processes {
     use std::{
         ffi::OsStr,
         fs,
-        os::unix::fs::PermissionsExt,
+        io::Write,
         path::{Path, PathBuf},
         process::{Command, Stdio},
         time::{Duration, Instant},
@@ -43,12 +43,27 @@ mod processes {
 
     fn fake_mpv(directory: &Path, body: &str) -> PathBuf {
         let path = directory.join("fake mpv");
-        fs::write(
-            &path,
-            format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$0.args\"\n{body}\n"),
-        )
-        .unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        let script = format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$0.args\"\n{body}\n");
+        // Keep the executable's writable descriptor out of this multithreaded
+        // test process. A concurrent fork can otherwise inherit it briefly and
+        // fail to exec the script with ETXTBSY on Linux container filesystems.
+        let mut writer = Command::new("/bin/sh")
+            .args([
+                "-c",
+                "cat > \"$1\" && chmod 700 \"$1\"",
+                "tootles-test-writer",
+            ])
+            .arg(&path)
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        writer
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(script.as_bytes())
+            .unwrap();
+        assert!(writer.wait().unwrap().success());
         path
     }
 
