@@ -182,7 +182,12 @@ tootles completions fish > ~/.config/fish/completions/tootles.fish
 tootles completions zsh  > /path/on/your/fpath/_tootles
 ```
 
-Create the parent directory for your shell first. Optional desktop and man-page files are in `packaging/`.
+Create the parent directory for your shell first. Optional desktop entry, icon, and man-page files are in `packaging/` (or the top level of a release archive). To add Tootles to your application launcher on Linux:
+
+```sh
+install -Dm644 packaging/tootles.desktop ~/.local/share/applications/tootles.desktop
+install -Dm644 packaging/tootles.png ~/.local/share/icons/hicolor/256x256/apps/tootles.png
+```
 
 Both hosting platforms have CI: [Forgejo](.forgejo/workflows/ci.yml) and [GitHub](.github/workflows/ci.yml) check formatting, Clippy, tests, release builds, and terminal workflows on pushes and pull requests. Each also supports a manual run. Both use a Node 22 / Debian Trixie container, with Python 3.13 and mpv 0.40 for the terminal tests. Forgejo needs a Docker-capable runner labeled `ubuntu-latest`; its workflow loads external actions from explicit URLs and needs no additional token or Authorized Integration for these checks.
 

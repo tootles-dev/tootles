@@ -12,7 +12,7 @@ The [GitHub release workflow](../.github/workflows/release.yml) builds standalon
 
 Linux archives require Ubuntu 24.04 or a compatible newer system with glibc. Build from source on older distributions or musl-based systems. macOS builds and tests run natively in the release workflow; interactive terminal behavior still needs testing on your Mac. Native Windows and Intel Mac packages are not currently produced.
 
-Each versioned archive, such as `tootles-v0.2.0-x86_64-unknown-linux-gnu.tar.gz`, contains the executable, README, license, man page, desktop entry, docs, and Bash, Zsh, and Fish completions. Its accompanying files are:
+Each versioned archive, such as `tootles-v0.2.0-x86_64-unknown-linux-gnu.tar.gz`, contains the executable, README, license, man page, desktop entry and icon, docs, and Bash, Zsh, and Fish completions. Its accompanying files are:
 
 | File suffix | Purpose |
 | --- | --- |

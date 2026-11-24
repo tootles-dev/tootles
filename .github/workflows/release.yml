@@ -94,7 +94,7 @@ jobs:
           test "$("$binary" --version)" = "tootles $VERSION"
           mkdir -p "dist/$BUNDLE/completions"
           cp "$binary" README.md LICENSE packaging/tootles.1 "dist/$BUNDLE/"
-          cp packaging/tootles.desktop "dist/$BUNDLE/"
+          cp packaging/tootles.desktop packaging/tootles.png "dist/$BUNDLE/"
           cp -R docs "dist/$BUNDLE/"
           for shell in bash zsh fish; do
             "$binary" completions "$shell" > "dist/$BUNDLE/completions/tootles.$shell"

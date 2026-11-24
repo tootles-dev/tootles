@@ -4,6 +4,7 @@ Name=Tootles
 GenericName=Social network client
 Comment=A calm terminal home for the open web
 Exec=tootles
+Icon=tootles
 Terminal=true
 Categories=Network;Chat;
 Keywords=Mastodon;Bluesky;Fediverse;Social;TUI;
