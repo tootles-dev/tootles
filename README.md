@@ -19,18 +19,27 @@
 | Play video or audio | The optional **mpv** executable on `PATH`. Window mode needs a graphical desktop; Terminal mode needs mpv's `kitty` or `tct` output. Alacritty uses `tct`. Playback is tested with **mpv 0.41.0**. |
 | Run the optional regression scripts | Python 3.11+ on a Unix system with PTY support; video tests also need **ffmpeg** and mpv. Python and the ffmpeg executable are development-test dependencies, not dependencies of the installed CLI. |
 
-**Platform status:** Linux is built and tested. macOS code paths and Apple Silicon release packaging are present, but native builds and runtime remain unverified. Native Windows support is incomplete: default configuration paths, credential permissions, testing, and packaging still need work.
+**Platform status:** Linux is built and tested. Apple Silicon macOS builds and passes the test suite natively in the release workflow, but interactive terminal use on macOS is still unverified. Native Windows support is incomplete: default configuration paths, credential permissions, testing, and packaging still need work.
 
 On Debian or Ubuntu, install the source-build tools with `sudo apt install build-essential`. For optional playback and opening browsers or default applications, install `sudo apt install mpv xdg-utils`. Other distributions can use their equivalent packages. Check `mpv --vo=help` for available video outputs. Hyprland is optional; Tootles runs inside your chosen terminal.
 
 ### Install a release build
 
-The public GitHub mirror's release workflow builds Linux x86_64, Linux ARM64, and Apple Silicon macOS archives. Version-tag releases include **Sigstore signatures**, **GitHub build provenance**, and SHA-256 checksums. See [download verification and installation](docs/releases.md) before extracting and installing a release. The installed executable does not require Rust or Cargo. Linux release builds target Ubuntu 24.04 or a compatible newer system; build from source on older distributions. Native Windows packages are not available yet.
+Prebuilt archives are published on [GitHub Releases](https://github.com/tootles-dev/tootles/releases/latest). The current release is [v0.2.0](https://github.com/tootles-dev/tootles/releases/tag/v0.2.0):
+
+| Platform | Archive |
+| --- | --- |
+| Linux x86_64 | `tootles-v0.2.0-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux ARM64 | `tootles-v0.2.0-aarch64-unknown-linux-gnu.tar.gz` |
+| Apple Silicon macOS | `tootles-v0.2.0-aarch64-apple-darwin.tar.gz` |
+
+Each archive comes with a SHA-256 checksum, a **Sigstore signature**, and **GitHub build provenance**. [Verify the download](docs/releases.md#verify-and-install-a-download) before extracting and installing it. The installed executable does not require Rust or Cargo. Linux release builds target Ubuntu 24.04 or a compatible newer glibc system; build from source on older or musl-based distributions. Native Windows packages are not available yet.
 
 ### Build and launch
 
 ```sh
-cd /vmstore/repos/tootles
+git clone https://github.com/tootles-dev/tootles.git
+cd tootles
 cargo install --locked --path .
 
 tootles --demo
@@ -177,9 +186,9 @@ Create the parent directory for your shell first. Optional desktop and man-page 
 
 Both hosting platforms have CI: [Forgejo](.forgejo/workflows/ci.yml) and [GitHub](.github/workflows/ci.yml) check formatting, Clippy, tests, release builds, and terminal workflows on pushes and pull requests. Each also supports a manual run. Both use a Node 22 / Debian Trixie container, with Python 3.13 and mpv 0.40 for the terminal tests. Forgejo needs a Docker-capable runner labeled `ubuntu-latest`; its workflow loads external actions from explicit URLs and needs no additional token or Authorized Integration for these checks.
 
-Forgejo reads `.forgejo/workflows` instead of falling back to `.github/workflows`. The public GitHub mirror uses `.github/workflows`, including its [release workflow](.github/workflows/release.yml). A `v*` tag matching `Cargo.toml` builds and tests Linux x86_64, Linux ARM64, and macOS ARM64 packages, signs each archive with GitHub's short-lived OIDC identity, and publishes a complete release after verifying its signatures and provenance. Packages include docs, the man page, and shell completions. No signing-key secret is needed. Manual branch runs produce unsigned build artifacts; manual tag runs follow the release process. See [GitHub setup, release signing, and verification](docs/releases.md).
+Forgejo reads `.forgejo/workflows` instead of falling back to `.github/workflows`. The [public GitHub mirror](https://github.com/tootles-dev/tootles) uses `.github/workflows`, including its [release workflow](.github/workflows/release.yml). A `v*` tag matching `Cargo.toml` builds and tests Linux x86_64, Linux ARM64, and macOS ARM64 packages, signs each archive with GitHub's short-lived OIDC identity, and publishes a complete release after verifying its signatures and provenance. Packages include docs, the man page, and shell completions. No signing-key secret is needed. Manual branch runs produce unsigned build artifacts; manual tag runs follow the release process. See [GitHub setup, release signing, and verification](docs/releases.md).
 
-Forgejo currently runs checks only; release publishing is configured for GitHub. Preparing these workflows does not publish a release. macOS archives have verifiable download signatures but are not Apple Developer ID signed or notarized.
+Forgejo currently runs checks only; releases are published on [GitHub](https://github.com/tootles-dev/tootles/releases). macOS archives have verifiable download signatures but are not Apple Developer ID signed or notarized.
 
 ## Development
 

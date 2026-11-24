@@ -26,10 +26,10 @@ These are signatures for verifying downloads. The macOS executable is not Apple 
 
 ## Verify and install a download
 
-Install [Cosign 3](https://docs.sigstore.dev/cosign/system_config/installation/) and, for provenance verification, a current [GitHub CLI](https://cli.github.com/). Use the public GitHub mirror's actual `OWNER/REPO` below; the Forgejo repository address is not a GitHub signing identity. Select a published version and the target from the table above.
+Install [Cosign 3](https://docs.sigstore.dev/cosign/system_config/installation/) and, for provenance verification, a current [GitHub CLI](https://cli.github.com/). Releases come from the public GitHub mirror, `tootles-dev/tootles`; the Forgejo repository address is not a GitHub signing identity. Select a published version and the target from the table above.
 
 ```sh
-repo='OWNER/REPO'
+repo='tootles-dev/tootles'
 version='0.2.0'
 tag="v$version"
 target='x86_64-unknown-linux-gnu'
